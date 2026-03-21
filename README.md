@@ -23,6 +23,12 @@ MISAKA testnet に初心者でも参加しやすい形で入るための配布 r
 1. tar.gz を展開
 2. `start-public-node.command` をダブルクリック
 
+もし macOS が「Mac に損害を与える可能性があるため開けません」などと表示した場合は、展開したフォルダに対して一度だけ quarantine を外してください。
+
+```bash
+xattr -dr com.apple.quarantine misaka-public-node-v0.4.1-macos-arm64
+```
+
 ### Linux
 
 1. tar.gz を展開

@@ -109,9 +109,17 @@ jobs:
 
       - name: Generate SHA256 checksums
         run: |
+          # SEC-FIX v0.5.7: emit basenames so SHA256SUMS works against the
+          # *flat* GitHub Release asset layout. Previously the file shipped
+          # `./misaka-public-node-linux-x86_64/misaka-public-node-linux-x86_64.tar.gz`
+          # style relative paths because `find .` traverses the staged
+          # artifact subdirectories, and end users hitting
+          # `sha256sum -c SHA256SUMS` got "No such file or directory" for
+          # every entry.
           cd artifacts
-          find . -name '*.tar.gz' -o -name '*.zip' | sort | while read f; do
-            sha256sum "$f"
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort | while read -r f; do
+            h=$(sha256sum "$f" | awk '{print $1}')
+            echo "${h}  $(basename "$f")"
           done > ../SHA256SUMS
           cat ../SHA256SUMS
 

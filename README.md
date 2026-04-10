@@ -63,6 +63,13 @@ router の設定画面は機種ごとに違うので、port forwarding 自体を
 - 1 行に 1 つ `HOST:PORT`
 - node 再起動後だけでなく、起動中も定期的に再読込します
 
+## genesis（委員会）とバンドル鍵
+
+初回起動時、`start-public-node.*` は `config/bundled-validator.key` を `misaka-data/validator.key` にコピーし（未作成のときのみ）、`config/genesis_committee.toml` を `--genesis-path` で渡します。これでノードが起動できる状態になります。
+
+- パッケージ同梱の genesis は **配布用の単一バリデータ委員会**です。公式テストネットと **genesis_hash を一致**させるには、運営が公開する公式 `genesis_committee.toml` に差し替えてください。
+- 同梱の `bundled-validator.key` は genesis の authority 0 と対応しています。複数ユーザーが **同一ネットワーク上で同時に** 同じ鍵を使うと衝突の原因になるため、本番参加時は運営の手順に従ってください。
+
 ## 含まれているもの
 
 ```
@@ -73,6 +80,8 @@ misaka-public-node-<platform>/
 ├── show-network-guide.*          # ネットワーク診断
 └── config/
     ├── public-node.toml
+    ├── genesis_committee.toml    # 起動用委員会マニフェスト
+    ├── bundled-validator.key     # 初回コピー用（authority 0 と対応）
     ├── seeds.txt
     └── self-host-seeds.txt
 ```

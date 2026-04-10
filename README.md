@@ -6,10 +6,10 @@ MISAKA testnet に初心者でも参加しやすい形で入るための配布 r
 
 | Platform | File |
 |---|---|
-| Windows x86_64 | `misaka-public-node-windows-x86_64.zip` |
-| macOS arm64 | `misaka-public-node-macos-arm64.tar.gz` |
-| Linux x86_64 | `misaka-public-node-linux-x86_64.tar.gz` |
-| SHA256 | `SHA256SUMS` |
+| Windows x86_64 | [misaka-public-node-windows-x86_64.zip](https://github.com/sasakiyuuu/misaka-test-net/releases/latest/download/misaka-public-node-windows-x86_64.zip) |
+| macOS arm64 | [misaka-public-node-macos-arm64.tar.gz](https://github.com/sasakiyuuu/misaka-test-net/releases/latest/download/misaka-public-node-macos-arm64.tar.gz) |
+| Linux x86_64 | [misaka-public-node-linux-x86_64.tar.gz](https://github.com/sasakiyuuu/misaka-test-net/releases/latest/download/misaka-public-node-linux-x86_64.tar.gz) |
+| SHA256 | [SHA256SUMS](https://github.com/sasakiyuuu/misaka-test-net/releases/latest/download/SHA256SUMS) |
 
 最新 release 一覧: https://github.com/sasakiyuuu/misaka-test-net/releases/latest
 
@@ -69,17 +69,12 @@ router の設定画面は機種ごとに違うので、port forwarding 自体を
 misaka-public-node-<platform>/
 ├── misaka-node(.exe)             # ノードバイナリ
 ├── start-public-node.*           # Public node 起動
-├── start-seed-node.*             # Seed node 起動
 ├── start-self-hosted-testnet.*   # ローカル 3 validator テスト
 ├── show-network-guide.*          # ネットワーク診断
-├── README.md
 └── config/
     ├── public-node.toml
-    ├── seed-node.toml
-    ├── validator-node.toml
     ├── seeds.txt
-    ├── self-host-seeds.txt
-    └── offline-seeds.txt
+    └── self-host-seeds.txt
 ```
 
 ## Docker

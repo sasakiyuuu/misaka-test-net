@@ -61,6 +61,104 @@ curl http://127.0.0.1:3001/api/get_chain_info
 - **`role`**: `observer` / `validator` — propose loop が回っているかどうか
 - **`mode`**: `topology` の back-compat alias (将来削除予定)
 
+## バックグラウンド運用 (Linux)
+
+### systemd (推奨)
+
+```bash
+sudo tee /etc/systemd/system/misaka-node.service << 'EOF'
+[Unit]
+Description=MISAKA Testnet Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=/home/$USER/misaka/misaka-public-node-linux-x86_64
+ExecStart=/home/$USER/misaka/misaka-public-node-linux-x86_64/start-public-node.sh
+Environment=MISAKA_RPC_AUTH_MODE=open
+Environment=MISAKA_ACCEPT_OBSERVERS=1
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now misaka-node
+
+# ログ確認
+journalctl -u misaka-node -f
+```
+
+### pm2 (Node.js ユーザー向け)
+
+pm2 は Node.js 以外のプロセスも管理できます。自動再起動・ログローテーション付き。
+
+```bash
+# pm2 インストール (未導入の場合)
+npm install -g pm2
+
+# ノード起動
+cd ~/misaka/misaka-public-node-linux-x86_64
+pm2 start ./start-public-node.sh --name misaka-node
+
+# API プロキシも起動する場合
+MISAKA_API_CORS_ORIGINS="*" pm2 start ./misaka-api \
+  --name misaka-api -- --node http://127.0.0.1:3001 --port 4000
+
+# OS 再起動時に自動起動
+pm2 save
+pm2 startup
+
+# ログ確認・状態確認
+pm2 logs misaka-node --lines 50
+pm2 status
+```
+
+## 更新方法
+
+新バージョンがリリースされたら、以下の手順でバイナリを差し替えます。
+`misaka-data/` は残るため、ブロック高やウォレット残高は再起動後も維持されます。
+
+```bash
+cd ~/misaka
+
+# 1. 新バージョンをダウンロード
+wget https://github.com/sasakiyuuu/misaka-test-net/releases/latest/download/misaka-public-node-linux-x86_64.tar.gz -O new.tar.gz
+tar xzf new.tar.gz -C /tmp/
+
+# 2. ノード停止
+pm2 stop misaka-node misaka-api        # pm2 の場合
+# sudo systemctl stop misaka-node      # systemd の場合
+
+# 3. バイナリ差し替え
+cp /tmp/misaka-public-node-linux-x86_64/misaka-node misaka-public-node-linux-x86_64/
+cp /tmp/misaka-public-node-linux-x86_64/misaka-api  misaka-public-node-linux-x86_64/
+
+# 4. 再起動
+pm2 restart misaka-node misaka-api     # pm2 の場合
+# sudo systemctl start misaka-node     # systemd の場合
+
+# 5. 確認
+curl -s http://127.0.0.1:3001/api/health
+```
+
+## トラブルシューティング
+
+| 症状 | 原因 | 対処 |
+|------|------|------|
+| `RPC auth config error: FATAL` | API Key 未設定 | `export MISAKA_RPC_AUTH_MODE=open` するか `start-public-node.sh` を使う |
+| `OBSERVER MODE` ログ | 正常動作 | 対処不要。ブロック受信・検証は行われる |
+| `SOLO MODE` ログ | seeds 未指定 | `start-public-node.sh` を使うか `--seeds` + `--seed-pubkeys` を指定 |
+| `sub-DAG block data unavailable` | 再起動後の DAG ギャップ | 自動回復を待つ (100 ラウンド以内) |
+| ブロック高が 0 に戻る | スナップショット未作成 | 100 コミット以上進むまで待つ |
+| macOS `quarantine` エラー | Gatekeeper ブロック | `xattr -d com.apple.quarantine ./misaka-node` |
+| Windows `was unexpected at this time` | パス中の括弧 | パスに `(` `)` を含まないフォルダに展開 |
+
 ## seed / genesis 情報
 
 公開 testnet の正本:

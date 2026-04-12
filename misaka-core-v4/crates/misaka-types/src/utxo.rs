@@ -188,7 +188,7 @@ pub struct UtxoTransaction {
 pub const UTXO_TX_VERSION: u8 = 0x02;
 
 /// Maximum extra data length.
-pub const MAX_EXTRA_LEN: usize = 1024;
+pub const MAX_EXTRA_LEN: usize = 2048;
 /// Maximum inputs per transaction.
 pub const MAX_INPUTS: usize = 16;
 /// Maximum outputs per transaction.

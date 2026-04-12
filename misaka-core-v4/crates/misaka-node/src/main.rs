@@ -1798,11 +1798,13 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             let observer_count_rpc = observer_count.clone();
             let committee_size_rpc = manifest_validator_count;
             let block_height = block_height_rpc.clone();
+            let genesis_hash_hex = hex::encode(genesis_hash);
             move || {
                 let msg_tx = msg_tx.clone();
                 let metrics2 = metrics2.clone();
                 let connected_peers = connected_peers.clone();
                 let block_height = block_height.clone();
+                let genesis_hash_hex = genesis_hash_hex.clone();
                 async move {
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     let _ = msg_tx.try_send(ConsensusMessage::GetStatus(reply_tx));
@@ -1827,6 +1829,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                         "iconUrl": "/api/chain-icon.svg",
                         "consensus": "Mysticeti-equivalent",
                         "chainId": chain_id_for_rpc,
+                        "genesisHash": genesis_hash_hex,
                         "version": env!("CARGO_PKG_VERSION"),
                         "pqSignature": "ML-DSA-65 (FIPS 204)",
                         "status": status,
@@ -2535,6 +2538,15 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                             "Restored UTXO snapshot: height={}, utxos={}",
                             restored.height, restored.len()
                         );
+                        {
+                            let mp_arc = narwhal_mempool.utxo_set();
+                            let mut mp_utxo = mp_arc.write().await;
+                            *mp_utxo = restored.clone();
+                        }
+                        {
+                            let mut rpc_utxo = utxo_set_writer.write().await;
+                            *rpc_utxo = restored.clone();
+                        }
                         crate::utxo_executor::UtxoExecutor::with_utxo_set(restored, app_id.clone())
                     }
                     _ => {
@@ -2681,26 +2693,39 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     buf.push_front(summary);
                 }
 
-                // Update shared UtxoSet for RPC queries
-                {
-                    let mut shared = utxo_set_writer.write().await;
-                    *shared = tx_executor.utxo_set().clone();
+                // Update shared UtxoSet for RPC queries and mempool admission.
+                // Full clone is expensive for large sets; do it when user TXs
+                // land or every 50th commit for block-reward catchup.
+                if exec_result.txs_accepted > 0 || output.commit_index % 50 == 1 {
+                    let fresh = tx_executor.utxo_set().clone();
+                    {
+                        let mut shared = utxo_set_writer.write().await;
+                        *shared = fresh.clone();
+                    }
+                    {
+                        let mp_arc = narwhal_mempool.utxo_set();
+                        let mut mp_utxo = mp_arc.write().await;
+                        *mp_utxo = fresh;
+                    }
                 }
 
                 // Index committed transaction hashes for get_tx_status
-                {
+                // and remove them from the mempool so status transitions
+                // from "pending" to "confirmed".
+                if !output.transactions.is_empty() {
                     let current_height = tx_executor.height();
                     let mut tx_map = committed_txs_writer.write().await;
+                    let mut mempool_guard = narwhal_mempool.mempool.lock().await;
                     for raw_tx in &output.transactions {
-                        if let Ok(tx) = serde_json::from_slice::<misaka_types::utxo::UtxoTransaction>(raw_tx) {
+                        if let Ok(tx) = borsh::from_slice::<misaka_types::utxo::UtxoTransaction>(raw_tx) {
                             let hash = tx.tx_hash();
                             tx_map.insert(hash, CommittedTx {
                                 height: current_height,
                                 status: "confirmed",
                             });
+                            mempool_guard.remove(&hash);
                         }
                     }
-                    // Evict oldest entries (lowest height) to cap at 10k
                     if tx_map.len() > 10_000 {
                         let excess = tx_map.len() - 10_000;
                         let mut entries: Vec<([u8; 32], u64)> = tx_map
@@ -2727,8 +2752,10 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     total_committed_txs,
                 );
 
-                // Persist UTXO snapshot every 100 commits for crash recovery
-                if output.commit_index % 100 == 0 {
+                // Persist UTXO snapshot periodically for crash recovery.
+                // Using 1000 to avoid blocking the executor (save takes ~30s
+                // for large UTXO sets and was causing permanent lag vs consensus).
+                if output.commit_index > 0 && output.commit_index % 1000 == 0 {
                     if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
                         tracing::warn!("Failed to save UTXO snapshot: {}", e);
                     } else {

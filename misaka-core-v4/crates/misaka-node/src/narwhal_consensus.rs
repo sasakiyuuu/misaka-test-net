@@ -97,7 +97,7 @@ impl NarwhalConsensusAdapter {
 #[cfg(feature = "dag")]
 #[derive(Clone)]
 pub struct NarwhalMempoolIngress {
-    mempool: Arc<Mutex<UtxoMempool>>,
+    pub(crate) mempool: Arc<Mutex<UtxoMempool>>,
     /// R7 C-2: Shared canonical UtxoSet — same instance used by the
     /// executor so admission checks see committed state.
     utxo_set: Arc<tokio::sync::RwLock<UtxoSet>>,
@@ -205,6 +205,9 @@ impl NarwhalMempoolIngress {
         spending_pubkey: Option<Vec<u8>>,
         amount: u64,
     ) -> serde_json::Value {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let mut extra = b"faucet:".to_vec();
+        extra.extend_from_slice(&now_ms.to_le_bytes());
         let faucet_tx = UtxoTransaction {
             version: misaka_types::utxo::UTXO_TX_VERSION,
             tx_type: misaka_types::utxo::TxType::Faucet,
@@ -215,12 +218,11 @@ impl NarwhalMempoolIngress {
                 spending_pubkey,
             }],
             fee: 0,
-            extra: b"faucet".to_vec(),
+            extra,
             expiry: 0,
         };
 
         let tx_hash = hex::encode(faucet_tx.tx_hash());
-        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let mut mempool = self.mempool.lock().await;
         match mempool.admit_system_tx(faucet_tx, now_ms) {
             Ok(_) => serde_json::json!({

@@ -227,7 +227,7 @@ impl UtxoExecutor {
         tx.validate_structure()
             .map_err(|e| TxExecutionError::StructuralInvalid(e.to_string()))?;
 
-        // 3. Kind dispatch — only TransparentTransfer and SystemEmission allowed
+        // 3. Kind dispatch
         match tx.tx_type {
             TxType::TransparentTransfer => self.validate_transparent_transfer(&tx, delta),
             TxType::SystemEmission => {
@@ -241,6 +241,7 @@ impl UtxoExecutor {
                 *emission_count += 1;
                 Ok(result)
             }
+            TxType::Faucet => self.validate_faucet_tx(&tx, delta),
             _ => Err(TxExecutionError::UnsupportedTxKind),
         }
     }
@@ -340,6 +341,7 @@ impl UtxoExecutor {
             if let Some(utxo_entry) = self.utxo_set.get(outref) {
                 let pk_hash: [u8; 32] = {
                     let mut h = Sha3_256::new();
+                    h.update(b"MISAKA:address:v1:");
                     h.update(&pk_bytes);
                     h.finalize().into()
                 };
@@ -520,20 +522,86 @@ impl UtxoExecutor {
                         e
                     ))
                 })?;
+            if let Some(ref spk) = output.spending_pubkey {
+                let _ = self.utxo_set.register_spending_key(outref.clone(), spk.clone());
+            }
+            delta.created.push(outref);
+        }
+        Ok(0)
+    }
+
+    /// Validate a Faucet transaction (testnet coin distribution).
+    ///
+    /// Similar to SystemEmission but without leader address verification,
+    /// since Faucet outputs go to the requesting user, not the block proposer.
+    fn validate_faucet_tx(
+        &mut self,
+        tx: &UtxoTransaction,
+        delta: &mut BlockDelta,
+    ) -> Result<u64, TxExecutionError> {
+        if !tx.inputs.is_empty() {
+            return Err(TxExecutionError::StructuralInvalid(
+                "Faucet tx must have no inputs".into(),
+            ));
+        }
+
+        Self::validate_output_pubkey_binding(&tx.outputs)?;
+
+        let mut total: u64 = 0;
+        for output in &tx.outputs {
+            total = total
+                .checked_add(output.amount)
+                .ok_or(TxExecutionError::AmountOverflow)?;
+        }
+        if total > PHASE2_MAX_COINBASE_PER_BLOCK {
+            return Err(TxExecutionError::CoinbaseExceedsCap);
+        }
+
+        let new_total = self
+            .total_emitted
+            .checked_add(total)
+            .ok_or(TxExecutionError::AmountOverflow)?;
+        if new_total > MAX_TOTAL_SUPPLY {
+            return Err(TxExecutionError::StructuralInvalid(format!(
+                "Faucet would exceed MAX_TOTAL_SUPPLY: emitted {} + new {} > cap {}",
+                self.total_emitted, total, MAX_TOTAL_SUPPLY
+            )));
+        }
+        self.total_emitted = new_total;
+
+        let tx_hash = tx.tx_hash();
+        for (idx, output) in tx.outputs.iter().enumerate() {
+            let outref = OutputRef {
+                tx_hash,
+                output_index: idx as u32,
+            };
+            self.utxo_set
+                .add_output(outref.clone(), output.clone(), self.height, false)
+                .map_err(|e| {
+                    TxExecutionError::StructuralInvalid(format!(
+                        "Faucet output add failed: {}",
+                        e
+                    ))
+                })?;
+            if let Some(ref spk) = output.spending_pubkey {
+                let _ = self.utxo_set.register_spending_key(outref.clone(), spk.clone());
+            }
             delta.created.push(outref);
         }
         Ok(0)
     }
 
     /// Audit #10: Validate P2PKH output binding.
-    /// For each output with spending_pubkey, enforce: address == SHA3-256(spending_pubkey).
-    /// This prevents an attacker from creating outputs that claim someone else's address.
+    /// For each output with spending_pubkey, enforce:
+    ///   address == SHA3-256("MISAKA:address:v1:" || spending_pubkey)
+    /// This is the canonical tagged-hash address derivation used by wallets.
     fn validate_output_pubkey_binding(outputs: &[TxOutput]) -> Result<(), TxExecutionError> {
         use sha3::{Digest, Sha3_256};
         for (idx, output) in outputs.iter().enumerate() {
             if let Some(ref spk) = output.spending_pubkey {
                 let expected_addr: [u8; 32] = {
                     let mut h = Sha3_256::new();
+                    h.update(b"MISAKA:address:v1:");
                     h.update(spk);
                     h.finalize().into()
                 };

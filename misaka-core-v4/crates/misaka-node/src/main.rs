@@ -1108,7 +1108,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     // ── CRIT #1 fix: Load genesis committee from manifest (not placeholders) ──
     let genesis_path = resolve_genesis_committee_path(cli.genesis_path.as_deref());
     tracing::info!(path = %genesis_path.display(), "Loading genesis committee manifest");
-    let manifest = crate::genesis_committee::GenesisCommitteeManifest::load(&genesis_path)?;
+    let manifest = crate::genesis_committee::GenesisCommitteeManifest::load_with_registered(&genesis_path)?;
     manifest.validate()?;
     let manifest_validator_count = manifest.validators.len();
 
@@ -1669,6 +1669,89 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             move || {
                 let narwhal_mempool = narwhal_mempool.clone();
                 async move { axum::Json(narwhal_mempool.mempool_info().await) }
+            }
+        }))
+        .route("/api/register_validator", axum::routing::post({
+            let reg_path = genesis_path.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("registered_validators.json");
+            move |body: axum::body::Bytes| {
+                let reg_path = reg_path.clone();
+                async move {
+                    let req: Result<crate::genesis_committee::RegisteredValidator, _> =
+                        serde_json::from_slice(&body);
+                    let rv = match req {
+                        Ok(rv) => rv,
+                        Err(e) => return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("invalid JSON: {e}"),
+                        })),
+                    };
+                    let pk_hex = rv.public_key.strip_prefix("0x")
+                        .unwrap_or(&rv.public_key);
+                    if hex::decode(pk_hex).map(|b| b.len()).unwrap_or(0) != 1952 {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "public_key must be a 1952-byte ML-DSA-65 key (hex)",
+                        }));
+                    }
+                    if rv.network_address.parse::<std::net::SocketAddr>().is_err() {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "network_address must be ip:port",
+                        }));
+                    }
+                    let mut registered: Vec<crate::genesis_committee::RegisteredValidator> =
+                        std::fs::read_to_string(&reg_path)
+                            .ok()
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                    if registered.iter().any(|r| r.public_key == rv.public_key) {
+                        return axum::Json(serde_json::json!({
+                            "ok": true,
+                            "message": "already registered",
+                        }));
+                    }
+                    registered.push(rv);
+                    let count = registered.len();
+                    if let Err(e) = std::fs::write(
+                        &reg_path,
+                        serde_json::to_string_pretty(&registered).unwrap_or_default(),
+                    ) {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("failed to save: {e}"),
+                        }));
+                    }
+                    tracing::info!("New validator registered (total: {})", count);
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "message": format!("registered as validator #{}", count),
+                        "note": "node restart required to activate",
+                    }))
+                }
+            }
+        }))
+        .route("/api/get_committee", axum::routing::get({
+            let gp = genesis_path.clone();
+            move || {
+                let gp = gp.clone();
+                async move {
+                    match crate::genesis_committee::GenesisCommitteeManifest::load_with_registered(&gp) {
+                        Ok(m) => axum::Json(serde_json::json!({
+                            "epoch": m.epoch,
+                            "validators": m.validators.iter().map(|v| serde_json::json!({
+                                "authority_index": v.authority_index,
+                                "public_key": v.public_key,
+                                "network_address": v.network_address,
+                                "stake": v.stake,
+                            })).collect::<Vec<_>>(),
+                        })),
+                        Err(e) => axum::Json(serde_json::json!({
+                            "error": format!("{e}"),
+                        })),
+                    }
+                }
             }
         }))
         // SEC-FIX v0.5.7: write endpoint now goes through the SHARED

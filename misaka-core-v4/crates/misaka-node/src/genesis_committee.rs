@@ -72,6 +72,13 @@ pub struct GenesisCommitteeSection {
     pub validators: Vec<GenesisValidator>,
 }
 
+/// A dynamically registered validator (from `/api/register_validator`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegisteredValidator {
+    pub public_key: String,
+    pub network_address: String,
+}
+
 /// Loaded and validated genesis committee manifest.
 pub struct GenesisCommitteeManifest {
     pub epoch: u64,
@@ -88,6 +95,53 @@ impl GenesisCommitteeManifest {
             epoch: parsed.committee.epoch,
             validators: parsed.committee.validators,
         })
+    }
+
+    /// Load genesis + merge any dynamically registered validators from
+    /// `registered_validators.json` in the same directory.
+    pub fn load_with_registered(path: &Path) -> Result<Self, ManifestError> {
+        let mut manifest = Self::load(path)?;
+        let reg_path = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("registered_validators.json");
+        if reg_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&reg_path) {
+                if let Ok(registered) =
+                    serde_json::from_str::<Vec<RegisteredValidator>>(&data)
+                {
+                    let existing_pks: HashSet<String> = manifest
+                        .validators
+                        .iter()
+                        .map(|v| v.public_key.clone())
+                        .collect();
+                    let genesis_count = manifest.validators.len();
+                    let mut next_index = genesis_count as u32;
+                    for rv in registered {
+                        if existing_pks.contains(&rv.public_key) {
+                            continue;
+                        }
+                        manifest.validators.push(GenesisValidator {
+                            authority_index: next_index,
+                            public_key: rv.public_key,
+                            stake: 1000,
+                            network_address: rv.network_address,
+                            solana_stake_account: None,
+                        });
+                        next_index += 1;
+                    }
+                    let added = manifest.validators.len() - genesis_count;
+                    if added > 0 {
+                        tracing::info!(
+                            "Merged {} registered validators (total committee size: {})",
+                            added,
+                            manifest.validators.len(),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(manifest)
     }
 
     /// Validate the manifest.

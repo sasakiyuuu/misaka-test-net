@@ -171,6 +171,8 @@ impl FaucetRateLimiter {
 #[derive(Debug, Deserialize)]
 pub struct FaucetRequest {
     pub address: String,
+    #[serde(default, alias = "spendingPubkey")]
+    pub spending_pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -194,6 +196,7 @@ pub struct FaucetResponse {
 #[derive(Debug)]
 struct FaucetQueueItem {
     address: String,
+    spending_pubkey: Option<String>,
     /// Channel to send the result back to the HTTP handler.
     response_tx: tokio::sync::oneshot::Sender<FaucetWorkerResult>,
 }
@@ -256,7 +259,7 @@ async fn faucet_worker(
 ) {
     let mut items_since_cleanup: u64 = 0;
     while let Some(item) = rx.recv().await {
-        let result = process_drip(&proxy, &item.address, drip_amount).await;
+        let result = process_drip(&proxy, &item.address, drip_amount, item.spending_pubkey.as_deref()).await;
         {
             let mut d = depth.lock().await;
             *d = d.saturating_sub(1);
@@ -277,11 +280,15 @@ async fn process_drip(
     proxy: &crate::proxy::NodeProxy,
     address: &str,
     amount: u64,
+    spending_pubkey: Option<&str>,
 ) -> FaucetWorkerResult {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "address": address,
         "amount": amount,
     });
+    if let Some(pk) = spending_pubkey {
+        body["spendingPubkey"] = serde_json::Value::String(pk.to_string());
+    }
 
     match proxy.post("/api/faucet", &body).await {
         Ok(resp) => {
@@ -331,17 +338,30 @@ pub fn router() -> Router<AppState> {
 /// `POST /api/v1/faucet/request`
 async fn handle_faucet_request(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     maybe_addr: Option<ConnectInfo<SocketAddr>>,
     Json(req): Json<FaucetRequest>,
 ) -> (StatusCode, Json<FaucetResponse>) {
     let faucet = state.faucet;
-    // SEC-FIX-2: If ConnectInfo is unavailable, reject the request instead
-    // of falling back to "unknown". Otherwise all users share one cooldown
-    // bucket, making the faucet a global lock after a single request.
-    let ip = match maybe_addr {
-        Some(addr) => addr.0.ip().to_string(),
+    // Use X-Real-IP / X-Forwarded-For from the reverse proxy first,
+    // then fall back to the TCP peer address.  Without this, all users
+    // behind nginx share the same 127.0.0.1 cooldown bucket.
+    let ip = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .map(|s| s.trim())
+        })
+        .map(|s| s.to_string())
+        .or_else(|| maybe_addr.map(|a| a.0.ip().to_string()));
+    let ip = match ip {
+        Some(ip) => ip,
         None => {
-            tracing::warn!("Faucet: ConnectInfo unavailable, rejecting request");
+            tracing::warn!("Faucet: cannot determine client IP, rejecting request");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FaucetResponse {
@@ -434,6 +454,7 @@ async fn handle_faucet_request(
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     let item = FaucetQueueItem {
         address: address.to_string(),
+        spending_pubkey: req.spending_pubkey.clone(),
         response_tx,
     };
 

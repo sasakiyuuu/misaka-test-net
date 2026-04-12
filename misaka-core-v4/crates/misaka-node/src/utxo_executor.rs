@@ -328,13 +328,18 @@ impl UtxoExecutor {
             }
 
             let outref = &input.utxo_refs[0];
-            let pk_bytes = self.utxo_set.get_spending_key(outref).ok_or_else(|| {
-                TxExecutionError::UtxoNotFound(format!(
-                    "{}:{}",
-                    hex::encode(&outref.tx_hash[..8]),
-                    outref.output_index
-                ))
-            })?;
+            let mut fallback_pk = Vec::new();
+            let pk_bytes = match self.utxo_set.get_spending_key(outref) {
+                Some(pk) => pk,
+                None if tx.extra.len() == 1952 => {
+                    fallback_pk = tx.extra.clone();
+                    &fallback_pk[..]
+                }
+                None => return Err(TxExecutionError::SignatureInvalid {
+                    input_index: i,
+                    reason: "spending key not found in UTXO set and not provided in tx.extra".into(),
+                }),
+            };
 
             // §4.2 step 5b: P2PKH pubkey match
             use sha3::{Digest, Sha3_256};

@@ -261,9 +261,15 @@ impl NarwhalMempoolIngress {
                 return Err(format!("input {} has no UTXO refs", i));
             }
             let outref = &input.utxo_refs[0];
-            let pk_bytes = utxo_guard
-                .get_spending_key(outref)
-                .ok_or_else(|| format!("spending key not found for input {}", i))?;
+            let mut fallback_pk = Vec::new();
+            let pk_bytes = match utxo_guard.get_spending_key(outref) {
+                Some(pk) => pk,
+                None if tx.extra.len() == 1952 => {
+                    fallback_pk = tx.extra.clone();
+                    &fallback_pk[..]
+                }
+                None => return Err(format!("spending key not found for input {} in UTXO set and not provided in tx.extra", i)),
+            };
 
             let pk = MlDsaPublicKey::from_bytes(pk_bytes)
                 .map_err(|e| format!("input {} invalid pubkey: {}", i, e))?;

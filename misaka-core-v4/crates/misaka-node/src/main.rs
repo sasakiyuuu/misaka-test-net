@@ -2753,9 +2753,8 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 );
 
                 // Persist UTXO snapshot periodically for crash recovery.
-                // Using 1000 to avoid blocking the executor (save takes ~30s
-                // for large UTXO sets and was causing permanent lag vs consensus).
-                if output.commit_index > 0 && output.commit_index % 1000 == 0 {
+                // Every 50 commits (~5 seconds) to minimize data loss on restart.
+                if output.commit_index > 0 && output.commit_index % 50 == 0 {
                     if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
                         tracing::warn!("Failed to save UTXO snapshot: {}", e);
                     } else {

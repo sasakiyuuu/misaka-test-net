@@ -33,14 +33,14 @@ const MAX_TXS_PER_COMMIT: usize = 10_000;
 /// §4.4: Emission outputs require 300-block maturity before spending.
 const EMISSION_MATURITY: u64 = 300;
 
-/// SEC-FIX: Maximum total supply (21 billion MISAKA in base units).
+/// SEC-FIX: Maximum total supply (10 billion MISAKA in base units).
 /// This is the hard cap enforced at the consensus execution layer.
 /// Previously only per-block emission cap existed (PHASE2_MAX_COINBASE_PER_BLOCK)
 /// but total supply was uncapped — SupplyTracker existed but was not connected.
-/// Hard cap: 21 billion MISAKA with 9 decimal places (base units).
-/// NOTE: The u64 representation here uses a truncated precision to fit u64::MAX.
-/// The canonical decimals (9) are defined in misaka_types::constants::DECIMALS.
-const MAX_TOTAL_SUPPLY: u64 = 2_100_000_000_000_000_000; // 21B × 10^8 base units
+/// Hard cap: 10 billion MISAKA with 9 decimal places (base units).
+/// 10B MSK × 10^9 = 10_000_000_000_000_000_000 base units.
+/// Fits within u64::MAX (≈18.4 × 10^18).
+const MAX_TOTAL_SUPPLY: u64 = 10_000_000_000_000_000_000; // 10B × 10^9 base units
 
 /// §5.5 Fee distribution — proposer receives 50%.
 /// NOTE: Not yet enforced in execution; fees are summed in CommitExecutionResult

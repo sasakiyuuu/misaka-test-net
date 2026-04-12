@@ -1745,7 +1745,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
 
                     let spending_pubkey = spending_pk_hex.and_then(|h| hex::decode(h).ok());
 
-                    const MAX_FAUCET_DRIP: u64 = 1_000_000_000_000;
+                    const MAX_FAUCET_DRIP: u64 = 100_000_000_000_000;
                     let faucet_amount: u64 = std::env::var("MISAKA_FAUCET_AMOUNT")
                         .ok()
                         .and_then(|s| s.parse().ok())

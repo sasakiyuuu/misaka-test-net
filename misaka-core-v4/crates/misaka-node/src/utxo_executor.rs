@@ -24,6 +24,9 @@ use tracing::{error, info, warn};
 /// Phase 3 replaces with epoch-based SystemEmission.
 const PHASE2_MAX_COINBASE_PER_BLOCK: u64 = 50_000_000_000;
 
+/// Faucet per-drip cap (100,000 MISAKA). Separate from block reward cap.
+const MAX_FAUCET_DRIP_AMOUNT: u64 = 100_000_000_000_000;
+
 /// Maximum transactions per committed batch.
 const MAX_TXS_PER_COMMIT: usize = 10_000;
 
@@ -558,7 +561,7 @@ impl UtxoExecutor {
                 .checked_add(output.amount)
                 .ok_or(TxExecutionError::AmountOverflow)?;
         }
-        if total > PHASE2_MAX_COINBASE_PER_BLOCK {
+        if total > MAX_FAUCET_DRIP_AMOUNT {
             return Err(TxExecutionError::CoinbaseExceedsCap);
         }
 

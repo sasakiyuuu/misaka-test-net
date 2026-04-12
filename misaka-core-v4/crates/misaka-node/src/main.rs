@@ -2172,6 +2172,9 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     // Track start time for uptime metric
     let start_time = std::time::Instant::now();
 
+    let shutdown_utxo_snapshot_path = std::path::Path::new(&cli.data_dir)
+        .join("narwhal_utxo_snapshot.json");
+
     // Graceful shutdown: handle SIGINT + SIGTERM
     let shutdown_msg_tx = msg_tx.clone();
     let shutdown_handle = tokio::spawn(async move {
@@ -2752,25 +2755,33 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     total_committed_txs,
                 );
 
-                // Persist UTXO snapshot periodically for crash recovery.
-                // Every 50 commits (~5 seconds) to minimize data loss on restart.
-                if output.commit_index > 0 && output.commit_index % 50 == 0 {
-                    if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
-                        tracing::warn!("Failed to save UTXO snapshot: {}", e);
-                    } else {
-                        tracing::info!(
-                            "UTXO snapshot saved at commit {} (height={})",
-                            output.commit_index,
-                            tx_executor.utxo_set().height,
-                        );
-                    }
+                // Persist UTXO snapshot on every commit to prevent data loss.
+                if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
+                    tracing::warn!("Failed to save UTXO snapshot: {}", e);
+                } else if output.commit_index % 100 == 0 {
+                    tracing::info!(
+                        "UTXO snapshot saved at commit {} (height={})",
+                        output.commit_index,
+                        tx_executor.utxo_set().height,
+                    );
                 }
             }
         } => {
             info!("Commit channel closed");
         }
         _ = shutdown_handle => {
-            info!("Shutdown signal received, waiting for runtime...");
+            info!("Shutdown signal received, saving final UTXO snapshot...");
+            {
+                let shared = utxo_set_writer.read().await;
+                if let Err(e) = shared.save_to_file(&shutdown_utxo_snapshot_path) {
+                    tracing::error!("Failed to save final UTXO snapshot on shutdown: {}", e);
+                } else {
+                    info!(
+                        "Final UTXO snapshot saved (height={})",
+                        shared.height,
+                    );
+                }
+            }
             let _ = runtime_handle.await;
             let uptime = start_time.elapsed();
             info!(

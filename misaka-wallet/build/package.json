@@ -1,0 +1,17 @@
+{
+  "name": "misaka-wallet-build",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@scure/bip39": "^1.5.4",
+    "@web3auth/base": "^9.7.0",
+    "@web3auth/base-provider": "^9.7.0",
+    "@web3auth/modal": "^10.15.0",
+    "lucide": "^1.8.0",
+    "ox": "^0.11.3",
+    "qrcode-generator": "^1.4.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

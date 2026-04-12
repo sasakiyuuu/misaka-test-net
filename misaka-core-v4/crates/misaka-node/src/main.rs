@@ -1489,14 +1489,21 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     // handlers. Drop-in against v0.5.7/v0.5.8 — no wire changes.
     let safe_mode = Arc::new(crate::safe_mode::SafeMode::new());
 
+    // Shared UtxoSet snapshot for RPC queries and mempool admission.
+    // Both RPC and mempool share the same Arc to avoid duplicating ~600MB.
+    let shared_utxo_set: Arc<tokio::sync::RwLock<misaka_storage::utxo_set::UtxoSet>> =
+        Arc::new(tokio::sync::RwLock::new(misaka_storage::utxo_set::UtxoSet::new(36)));
+    let utxo_set_writer = shared_utxo_set.clone();
+    let utxo_set_rpc = shared_utxo_set.clone();
+
     // Phase 1: Spawn propose loop — drains mempool into CoreEngine
     let (mempool_propose_tx, mempool_propose_rx) =
         crate::narwhal_consensus::mempool_propose_channel(10_000);
     // Audit #26: Pass AppId so submit_tx can verify IntentMessage signatures
     let mempool_app_id = misaka_types::intent::AppId::new(cli.chain_id, genesis_hash);
-    let narwhal_mempool = crate::narwhal_consensus::NarwhalMempoolIngress::new(
+    let narwhal_mempool = crate::narwhal_consensus::NarwhalMempoolIngress::new_with_shared_utxo(
         cli.dag_mempool_size,
-        misaka_storage::utxo_set::UtxoSet::new(1000),
+        shared_utxo_set.clone(),
         mempool_propose_tx.clone(),
         mempool_app_id,
     );
@@ -1526,13 +1533,6 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
         Arc::new(std::sync::atomic::AtomicU64::new(0));
     let block_height_writer = shared_block_height.clone();
     let block_height_rpc = shared_block_height.clone();
-
-    // Shared UtxoSet snapshot for RPC queries (get_utxos_by_address, get_balance).
-    // Updated by the commit loop after each commit.
-    let shared_utxo_set: Arc<tokio::sync::RwLock<misaka_storage::utxo_set::UtxoSet>> =
-        Arc::new(tokio::sync::RwLock::new(misaka_storage::utxo_set::UtxoSet::new(36)));
-    let utxo_set_writer = shared_utxo_set.clone();
-    let utxo_set_rpc = shared_utxo_set.clone();
 
     // Committed TX index for get_tx_status (maps tx_hash -> (height, status))
     #[derive(Clone, serde::Serialize)]
@@ -2542,13 +2542,9 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                             restored.height, restored.len()
                         );
                         {
-                            let mp_arc = narwhal_mempool.utxo_set();
-                            let mut mp_utxo = mp_arc.write().await;
-                            *mp_utxo = restored.clone();
-                        }
-                        {
-                            let mut rpc_utxo = utxo_set_writer.write().await;
-                            *rpc_utxo = restored.clone();
+                            // Mempool and RPC share the same Arc, one write suffices
+                            let mut shared = utxo_set_writer.write().await;
+                            *shared = restored.clone();
                         }
                         crate::utxo_executor::UtxoExecutor::with_utxo_set(restored, app_id.clone())
                     }
@@ -2697,21 +2693,13 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 }
 
                 // Update shared UtxoSet for RPC queries and mempool admission.
-                // Clone is expensive (~600MB); only do it when user TXs land
-                // or every 500th commit for block-reward catchup.
-                if exec_result.txs_accepted > 0 || output.commit_index % 500 == 1 {
+                // The mempool and RPC share the same Arc, so one clone suffices.
+                // Clone is expensive (~600MB) so limit to: immediately on user
+                // TXs, or every 100th commit (~10s) for block-reward catchup.
+                if exec_result.txs_accepted > 0 || output.commit_index % 100 == 1 {
                     let fresh = tx_executor.utxo_set().clone();
-                    {
-                        let mut shared = utxo_set_writer.write().await;
-                        *shared = fresh;
-                    }
-                    // Also update mempool's view
-                    {
-                        let fresh2 = tx_executor.utxo_set().clone();
-                        let mp_arc = narwhal_mempool.utxo_set();
-                        let mut mp_utxo = mp_arc.write().await;
-                        *mp_utxo = fresh2;
-                    }
+                    let mut shared = utxo_set_writer.write().await;
+                    *shared = fresh;
                 }
 
                 // Index committed transaction hashes for get_tx_status

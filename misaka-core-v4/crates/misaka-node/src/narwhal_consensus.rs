@@ -122,6 +122,21 @@ impl NarwhalMempoolIngress {
         }
     }
 
+    pub fn new_with_shared_utxo(
+        max_size: usize,
+        utxo_set: Arc<tokio::sync::RwLock<UtxoSet>>,
+        relay_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+        app_id: misaka_types::intent::AppId,
+    ) -> Self {
+        let mut mempool = UtxoMempool::new(max_size);
+        mempool.set_narwhal_relay(relay_tx);
+        Self {
+            mempool: Arc::new(Mutex::new(mempool)),
+            utxo_set,
+            app_id,
+        }
+    }
+
     /// R7 C-2: Access the shared UtxoSet handle so the executor can
     /// clone the Arc and keep both sides in sync.
     pub fn utxo_set(&self) -> Arc<tokio::sync::RwLock<UtxoSet>> {

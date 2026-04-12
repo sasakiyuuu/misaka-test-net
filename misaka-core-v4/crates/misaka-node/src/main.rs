@@ -2697,18 +2697,20 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 }
 
                 // Update shared UtxoSet for RPC queries and mempool admission.
-                // Full clone is expensive for large sets; do it when user TXs
-                // land or every 50th commit for block-reward catchup.
-                if exec_result.txs_accepted > 0 || output.commit_index % 50 == 1 {
+                // Clone is expensive (~600MB); only do it when user TXs land
+                // or every 500th commit for block-reward catchup.
+                if exec_result.txs_accepted > 0 || output.commit_index % 500 == 1 {
                     let fresh = tx_executor.utxo_set().clone();
                     {
                         let mut shared = utxo_set_writer.write().await;
-                        *shared = fresh.clone();
+                        *shared = fresh;
                     }
+                    // Also update mempool's view
                     {
+                        let fresh2 = tx_executor.utxo_set().clone();
                         let mp_arc = narwhal_mempool.utxo_set();
                         let mut mp_utxo = mp_arc.write().await;
-                        *mp_utxo = fresh;
+                        *mp_utxo = fresh2;
                     }
                 }
 
@@ -2755,33 +2757,29 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     total_committed_txs,
                 );
 
-                // Persist UTXO snapshot on every commit to prevent data loss.
-                if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
-                    tracing::warn!("Failed to save UTXO snapshot: {}", e);
-                } else if output.commit_index % 100 == 0 {
-                    tracing::info!(
-                        "UTXO snapshot saved at commit {} (height={})",
-                        output.commit_index,
-                        tx_executor.utxo_set().height,
-                    );
+                // Persist UTXO snapshot when user TXs land.
+                // Only save when actual transactions are accepted to avoid
+                // wasteful 2GB+ writes on empty blocks. The snapshot is saved
+                // synchronously here (blocking) because spawn_blocking + clone
+                // doubles memory usage and triggers OOM on small servers.
+                if exec_result.txs_accepted > 0 {
+                    if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
+                        tracing::warn!("Failed to save UTXO snapshot: {}", e);
+                    } else {
+                        tracing::info!(
+                            "UTXO snapshot saved at commit {} (height={}) [triggered by {} accepted tx(s)]",
+                            output.commit_index,
+                            tx_executor.utxo_set().height,
+                            exec_result.txs_accepted,
+                        );
+                    }
                 }
             }
         } => {
             info!("Commit channel closed");
         }
         _ = shutdown_handle => {
-            info!("Shutdown signal received, saving final UTXO snapshot...");
-            {
-                let shared = utxo_set_writer.read().await;
-                if let Err(e) = shared.save_to_file(&shutdown_utxo_snapshot_path) {
-                    tracing::error!("Failed to save final UTXO snapshot on shutdown: {}", e);
-                } else {
-                    info!(
-                        "Final UTXO snapshot saved (height={})",
-                        shared.height,
-                    );
-                }
-            }
+            info!("Shutdown signal received");
             let _ = runtime_handle.await;
             let uptime = start_time.elapsed();
             info!(

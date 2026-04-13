@@ -170,6 +170,72 @@ curl -s http://127.0.0.1:3001/api/health
 
 配布パッケージにはこれらが全て揃っているので、追加のファイル編集なしで起動できます。seed pubkey は Narwhal relay の PK-pinning 必須なので、`seeds.txt` と `seed-pubkeys.txt` が 1:1 対応していることが `start-public-node.*` の内部で自動チェックされます。不一致なら launcher は solo mode に fallback します。
 
+## バリデーター登録 / 削除 API
+
+テストネットでは、バリデーターの登録・削除を REST API で行えます。
+
+### 登録
+
+```bash
+curl -X POST https://testnet.misaka-network.com/api/register_validator \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "public_key": "0x<ML-DSA-65 公開鍵 hex>",
+    "network_address": "203.0.113.10:16110"
+  }'
+# => {"ok":true,"message":"registered as validator #2","note":"node restart required to activate"}
+```
+
+同じ `public_key` で再度呼んだ場合は `"already registered"` が返り、重複登録にはなりません。
+
+### 削除
+
+`public_key` または `network_address`（もしくは両方）を指定して、登録済みバリデーターを削除します。
+
+```bash
+# public_key で削除
+curl -X POST https://testnet.misaka-network.com/api/deregister_validator \
+  -H 'Content-Type: application/json' \
+  -d '{"public_key": "0x<削除したい公開鍵 hex>"}'
+
+# network_address で削除
+curl -X POST https://testnet.misaka-network.com/api/deregister_validator \
+  -H 'Content-Type: application/json' \
+  -d '{"network_address": "[2a01:4f9:c012:71e8::1]:6691"}'
+# => {"ok":true,"message":"removed 1 validator(s)","remaining":1,"note":"node restart required to take effect"}
+```
+
+### コミッティ確認
+
+現在登録されているバリデーター一覧を取得できます。
+
+```bash
+curl https://testnet.misaka-network.com/api/get_committee
+# => {"epoch":0,"validators":[{"authority_index":0,...},{"authority_index":1,...}]}
+```
+
+### Python スクリプト
+
+`scripts/register_validator_example.py` でも登録・削除が行えます。
+
+```bash
+pip install requests
+
+# 登録
+python3 scripts/register_validator_example.py register \
+  --public-key 0xabcdef... --address 203.0.113.10:16110
+
+# 削除 (アドレス指定)
+python3 scripts/register_validator_example.py deregister \
+  --address "[2a01:4f9:c012:71e8::1]:6691"
+
+# 削除 (公開鍵指定)
+python3 scripts/register_validator_example.py deregister \
+  --public-key 0xabcdef...
+```
+
+> **注意**: 登録・削除後はシードノードの再起動が必要です。反映までタイムラグがあります。
+
 ## 含まれているもの
 
 各プラットフォームの配布物は以下の構成です:

@@ -1732,6 +1732,84 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 }
             }
         }))
+        .route("/api/deregister_validator", axum::routing::post({
+            let reg_path = genesis_path.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("registered_validators.json");
+            move |body: axum::body::Bytes| {
+                let reg_path = reg_path.clone();
+                async move {
+                    #[derive(serde::Deserialize)]
+                    struct DeregisterRequest {
+                        public_key: Option<String>,
+                        network_address: Option<String>,
+                    }
+                    let req: Result<DeregisterRequest, _> = serde_json::from_slice(&body);
+                    let dr = match req {
+                        Ok(dr) => dr,
+                        Err(e) => return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("invalid JSON: {e}"),
+                        })),
+                    };
+                    if dr.public_key.is_none() && dr.network_address.is_none() {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "must provide public_key and/or network_address",
+                        }));
+                    }
+                    let mut registered: Vec<crate::genesis_committee::RegisteredValidator> =
+                        std::fs::read_to_string(&reg_path)
+                            .ok()
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                    let before = registered.len();
+                    registered.retain(|r| {
+                        if let Some(ref pk) = dr.public_key {
+                            let pk_norm = pk.strip_prefix("0x").unwrap_or(pk).to_lowercase();
+                            let r_norm = r.public_key.strip_prefix("0x")
+                                .unwrap_or(&r.public_key).to_lowercase();
+                            if pk_norm == r_norm {
+                                return false;
+                            }
+                        }
+                        if let Some(ref addr) = dr.network_address {
+                            if &r.network_address == addr {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                    let removed = before - registered.len();
+                    if removed == 0 {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "no matching validator found",
+                        }));
+                    }
+                    if let Err(e) = std::fs::write(
+                        &reg_path,
+                        serde_json::to_string_pretty(&registered).unwrap_or_default(),
+                    ) {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("failed to save: {e}"),
+                        }));
+                    }
+                    tracing::info!(
+                        "Deregistered {} validator(s) (remaining: {})",
+                        removed,
+                        registered.len(),
+                    );
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "message": format!("removed {} validator(s)", removed),
+                        "remaining": registered.len(),
+                        "note": "node restart required to take effect",
+                    }))
+                }
+            }
+        }))
         .route("/api/get_committee", axum::routing::get({
             let gp = genesis_path.clone();
             move || {

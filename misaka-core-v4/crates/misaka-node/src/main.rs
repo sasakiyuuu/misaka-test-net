@@ -1244,9 +1244,14 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
 
     let store_path = data_dir.join("narwhal_consensus");
     info!("startup[4/6]: opening RocksDB at {}...", store_path.display());
-    let store = misaka_dag::narwhal_dag::rocksdb_store::RocksDbConsensusStore::open(&store_path)?;
+    let rocks_store = std::sync::Arc::new(
+        misaka_dag::narwhal_dag::rocksdb_store::RocksDbConsensusStore::open(&store_path)?
+    );
+    let tx_index_store = rocks_store.clone();
+    let tx_index_store_rpc = rocks_store.clone();
+    let addr_index_store_rpc = rocks_store.clone();
     let store: std::sync::Arc<dyn misaka_dag::narwhal_dag::store::ConsensusStore> =
-        std::sync::Arc::new(store);
+        rocks_store.clone();
     info!("startup[5/6]: RocksDB opened OK");
     let committee_pks: Vec<Vec<u8>> = committee
         .authorities
@@ -1537,13 +1542,40 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     let block_height_writer = shared_block_height.clone();
     let block_height_rpc = shared_block_height.clone();
 
-    // Committed TX index for get_tx_status (maps tx_hash -> (height, status))
-    #[derive(Clone, serde::Serialize)]
-    struct CommittedTx {
-        height: u64,
-        status: &'static str,
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct TxInputSummary {
+        utxo_refs: Vec<String>,
     }
-    let committed_txs: Arc<tokio::sync::RwLock<std::collections::HashMap<[u8; 32], CommittedTx>>> =
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct TxOutputSummary {
+        address: String,
+        amount: u64,
+    }
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct CommittedTxDetail {
+        height: u64,
+        status: String,
+        tx_type: String,
+        inputs: Vec<TxInputSummary>,
+        outputs: Vec<TxOutputSummary>,
+        fee: u64,
+        timestamp_ms: u64,
+        leader_authority: u32,
+        participating_validators: Vec<u32>,
+        memo: String,
+    }
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct AddressTxRef {
+        tx_hash: String,
+        direction: String,
+        amount: u64,
+        height: u64,
+        timestamp_ms: u64,
+        tx_type: String,
+    }
+
+    // In-memory cache (bounded) + RocksDB for persistence
+    let committed_txs: Arc<tokio::sync::RwLock<std::collections::HashMap<[u8; 32], CommittedTxDetail>>> =
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     let committed_txs_writer = committed_txs.clone();
     let committed_txs_rpc = committed_txs.clone();
@@ -2357,18 +2389,46 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             }
         }))
         .route("/api/get_address_history", axum::routing::post({
+            let rocks = addr_index_store_rpc.clone();
             move |body: axum::Json<serde_json::Value>| {
+                let rocks = rocks.clone();
                 async move {
                     let address = body.get("address").and_then(|v| v.as_str()).unwrap_or("");
-                    let page = body.get("page").and_then(|v| v.as_u64()).unwrap_or(1);
-                    let page_size = body.get("pageSize").and_then(|v| v.as_u64()).unwrap_or(20);
+                    let page = body.get("page").and_then(|v| v.as_u64()).unwrap_or(1).max(1);
+                    let page_size = body.get("pageSize").and_then(|v| v.as_u64()).unwrap_or(20).min(100);
+
+                    let all_entries = match rocks.get_addr_entries(address) {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            tracing::warn!("get_addr_entries failed: {}", e);
+                            Vec::new()
+                        }
+                    };
+
+                    let total = all_entries.len() as u64;
+                    let skip = ((page - 1) * page_size) as usize;
+                    let txs: Vec<serde_json::Value> = all_entries
+                        .into_iter()
+                        .rev()
+                        .skip(skip)
+                        .take(page_size as usize)
+                        .filter_map(|bytes| serde_json::from_slice::<AddressTxRef>(&bytes).ok())
+                        .map(|r| serde_json::json!({
+                            "txHash": r.tx_hash,
+                            "direction": r.direction,
+                            "amount": r.amount,
+                            "height": r.height,
+                            "timestampMs": r.timestamp_ms,
+                            "txType": r.tx_type,
+                        }))
+                        .collect();
+
                     axum::Json(serde_json::json!({
                         "address": address,
-                        "transactions": [],
+                        "transactions": txs,
                         "page": page,
                         "pageSize": page_size,
-                        "total": 0,
-                        "note": "Address history indexer not yet implemented"
+                        "total": total,
                     }))
                 }
             }
@@ -2394,36 +2454,78 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
         .route("/api/get_tx_status", axum::routing::post({
             let mempool = narwhal_mempool.clone();
             let committed = committed_txs_rpc.clone();
+            let rocks = tx_index_store_rpc.clone();
             move |body: axum::Json<serde_json::Value>| {
                 let mempool = mempool.clone();
                 let committed = committed.clone();
+                let rocks = rocks.clone();
                 async move {
                     let tx_hash_hex = body.get("txHash").and_then(|v| v.as_str()).unwrap_or("");
                     let hash_bytes: Option<[u8; 32]> = hex::decode(tx_hash_hex)
                         .ok()
                         .and_then(|b| b.try_into().ok());
 
-                    let (status, block_height) = match hash_bytes {
+                    match hash_bytes {
                         Some(h) => {
                             if mempool.contains_tx(&h).await {
-                                ("pending", None)
-                            } else {
+                                return axum::Json(serde_json::json!({
+                                    "txHash": tx_hash_hex,
+                                    "status": "pending",
+                                    "blockHeight": null,
+                                }));
+                            }
+
+                            // Try in-memory cache first
+                            {
                                 let tx_map = committed.read().await;
-                                if let Some(record) = tx_map.get(&h) {
-                                    ("confirmed", Some(record.height))
-                                } else {
-                                    ("unknown", None)
+                                if let Some(detail) = tx_map.get(&h) {
+                                    return axum::Json(serde_json::json!({
+                                        "txHash": tx_hash_hex,
+                                        "status": detail.status,
+                                        "blockHeight": detail.height,
+                                        "txType": detail.tx_type,
+                                        "inputs": detail.inputs,
+                                        "outputs": detail.outputs,
+                                        "fee": detail.fee,
+                                        "timestampMs": detail.timestamp_ms,
+                                        "leaderAuthority": detail.leader_authority,
+                                        "participatingValidators": detail.participating_validators,
+                                        "memo": detail.memo,
+                                    }));
                                 }
                             }
-                        }
-                        None => ("unknown", None),
-                    };
 
-                    axum::Json(serde_json::json!({
-                        "txHash": tx_hash_hex,
-                        "status": status,
-                        "blockHeight": block_height,
-                    }))
+                            // Fallback to RocksDB
+                            if let Ok(Some(bytes)) = rocks.get_tx_detail(&h) {
+                                if let Ok(detail) = serde_json::from_slice::<CommittedTxDetail>(&bytes) {
+                                    return axum::Json(serde_json::json!({
+                                        "txHash": tx_hash_hex,
+                                        "status": detail.status,
+                                        "blockHeight": detail.height,
+                                        "txType": detail.tx_type,
+                                        "inputs": detail.inputs,
+                                        "outputs": detail.outputs,
+                                        "fee": detail.fee,
+                                        "timestampMs": detail.timestamp_ms,
+                                        "leaderAuthority": detail.leader_authority,
+                                        "participatingValidators": detail.participating_validators,
+                                        "memo": detail.memo,
+                                    }));
+                                }
+                            }
+
+                            axum::Json(serde_json::json!({
+                                "txHash": tx_hash_hex,
+                                "status": "unknown",
+                                "blockHeight": null,
+                            }))
+                        }
+                        None => axum::Json(serde_json::json!({
+                            "txHash": tx_hash_hex,
+                            "status": "unknown",
+                            "blockHeight": null,
+                        })),
+                    }
                 }
             }
         }));
@@ -2983,20 +3085,96 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 // Index committed transaction hashes for get_tx_status
                 // and remove them from the mempool so status transitions
                 // from "pending" to "confirmed".
+                // Persist full CommittedTxDetail + AddressTxRef to RocksDB.
                 if !output.transactions.is_empty() {
                     let current_height = tx_executor.height();
+                    let leader_authority = output.leader.author as u32;
+                    let mut participating: Vec<u32> = output
+                        .blocks
+                        .iter()
+                        .map(|b| b.author as u32)
+                        .collect::<std::collections::BTreeSet<u32>>()
+                        .into_iter()
+                        .collect();
+                    if !participating.contains(&leader_authority) {
+                        participating.push(leader_authority);
+                        participating.sort_unstable();
+                    }
+
                     let mut tx_map = committed_txs_writer.write().await;
                     let mut mempool_guard = narwhal_mempool.mempool.lock().await;
                     for raw_tx in &output.transactions {
                         if let Ok(tx) = borsh::from_slice::<misaka_types::utxo::UtxoTransaction>(raw_tx) {
                             let hash = tx.tx_hash();
-                            tx_map.insert(hash, CommittedTx {
+                            let hash_hex = hex::encode(hash);
+                            let tx_type_str = format!("{:?}", tx.tx_type);
+                            let memo = String::from_utf8(tx.extra.clone()).unwrap_or_default();
+
+                            let inputs_summary: Vec<TxInputSummary> = tx.inputs.iter().map(|inp| {
+                                TxInputSummary {
+                                    utxo_refs: inp.utxo_refs.iter().map(|r| {
+                                        format!("{}:{}", hex::encode(r.tx_hash), r.output_index)
+                                    }).collect(),
+                                }
+                            }).collect();
+
+                            let outputs_summary: Vec<TxOutputSummary> = tx.outputs.iter().map(|out| {
+                                TxOutputSummary {
+                                    address: misaka_types::address::encode_address(&out.address, cli.chain_id),
+                                    amount: out.amount,
+                                }
+                            }).collect();
+
+                            let detail = CommittedTxDetail {
                                 height: current_height,
-                                status: "confirmed",
-                            });
+                                status: "confirmed".to_string(),
+                                tx_type: tx_type_str.clone(),
+                                inputs: inputs_summary,
+                                outputs: outputs_summary.clone(),
+                                fee: tx.fee,
+                                timestamp_ms: output.timestamp_ms,
+                                leader_authority,
+                                participating_validators: participating.clone(),
+                                memo: memo.clone(),
+                            };
+
+                            // Persist to RocksDB
+                            if let Ok(json_bytes) = serde_json::to_vec(&detail) {
+                                if let Err(e) = tx_index_store.put_tx_detail(&hash, &json_bytes) {
+                                    tracing::warn!("Failed to persist tx_index: {}", e);
+                                }
+                            }
+
+                            // Persist address index entries for outputs
+                            for out_summary in &outputs_summary {
+                                let addr_ref = AddressTxRef {
+                                    tx_hash: hash_hex.clone(),
+                                    direction: "receive".to_string(),
+                                    amount: out_summary.amount,
+                                    height: current_height,
+                                    timestamp_ms: output.timestamp_ms,
+                                    tx_type: tx_type_str.clone(),
+                                };
+                                if let Ok(ref_bytes) = serde_json::to_vec(&addr_ref) {
+                                    let addr_key = format!(
+                                        "{}:{:016x}:{}",
+                                        out_summary.address, current_height, hash_hex
+                                    );
+                                    if let Err(e) = tx_index_store.put_addr_entry(
+                                        addr_key.as_bytes(),
+                                        &ref_bytes,
+                                    ) {
+                                        tracing::warn!("Failed to persist addr_index: {}", e);
+                                    }
+                                }
+                            }
+
+                            // In-memory cache
+                            tx_map.insert(hash, detail);
                             mempool_guard.remove(&hash);
                         }
                     }
+                    // Evict oldest entries from in-memory cache if too large
                     if tx_map.len() > 10_000 {
                         let excess = tx_map.len() - 10_000;
                         let mut entries: Vec<([u8; 32], u64)> = tx_map

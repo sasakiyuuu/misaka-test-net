@@ -324,6 +324,10 @@ pub struct ProposeLoopConfig {
     pub max_block_txs: usize,
     /// Status poll interval for threshold-clock round advancement.
     pub status_poll_ms: u64,
+    /// Shared backpressure flag from the consensus runtime. When set,
+    /// the propose loop sleeps instead of producing new proposals so
+    /// the commit pipeline can drain.
+    pub backpressure: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "dag")]
@@ -332,6 +336,7 @@ impl Default for ProposeLoopConfig {
         Self {
             max_block_txs: 1000,
             status_poll_ms: 100,
+            backpressure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -401,6 +406,12 @@ pub fn spawn_propose_loop(
                     pending_txs.clear();
                     continue;
                 }
+            }
+
+            if config.backpressure.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::debug!("Propose loop: commit backpressure detected, throttling 500ms");
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                continue;
             }
 
             let (status_tx, status_rx) = tokio::sync::oneshot::channel();

@@ -1280,7 +1280,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     };
 
     info!("startup[6/6]: spawning consensus runtime...");
-    let (msg_tx, mut commit_rx, mut block_rx, metrics, runtime_handle) =
+    let (msg_tx, mut commit_rx, mut block_rx, metrics, backpressure, runtime_handle) =
         spawn_consensus_runtime(config, signer, Some(store), chain_ctx);
 
     let our_manifest_entry = manifest
@@ -1595,6 +1595,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             mempool_propose_rx,
             crate::narwhal_consensus::ProposeLoopConfig {
                 max_block_txs: cli.dag_max_txs,
+                backpressure: backpressure.clone(),
                 ..crate::narwhal_consensus::ProposeLoopConfig::default()
             },
             propose_state_root,

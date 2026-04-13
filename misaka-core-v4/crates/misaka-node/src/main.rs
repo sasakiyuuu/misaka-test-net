@@ -1208,6 +1208,9 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
 
     info!("startup[1/6]: building committee from manifest...");
     let committee = manifest.to_committee()?;
+    let committee_shared: std::sync::Arc<tokio::sync::RwLock<
+        misaka_dag::narwhal_types::committee::Committee,
+    >> = std::sync::Arc::new(tokio::sync::RwLock::new(committee.clone()));
     info!("startup[2/6]: parsing validator keys...");
     let relay_public_key = identity.validator_public_key()?;
     let relay_secret_key = Arc::new(identity.validator_secret_key()?);
@@ -1675,8 +1678,14 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             let reg_path = genesis_path.parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("registered_validators.json");
+            let reload_genesis_path = genesis_path.clone();
+            let reload_msg_tx = msg_tx.clone();
+            let reload_committee = committee_shared.clone();
             move |body: axum::body::Bytes| {
                 let reg_path = reg_path.clone();
+                let reload_genesis_path = reload_genesis_path.clone();
+                let reload_msg_tx = reload_msg_tx.clone();
+                let reload_committee = reload_committee.clone();
                 async move {
                     let req: Result<crate::genesis_committee::RegisteredValidator, _> =
                         serde_json::from_slice(&body);
@@ -1724,10 +1733,114 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                         }));
                     }
                     tracing::info!("New validator registered (total: {})", count);
+                    // Hot-reload committee into consensus
+                    if let Ok(new_manifest) = crate::genesis_committee::GenesisCommitteeManifest::load_with_registered(&reload_genesis_path) {
+                        if let Ok(new_committee) = new_manifest.to_committee() {
+                            *reload_committee.write().await = new_committee.clone();
+                            let _ = reload_msg_tx.send(
+                                misaka_dag::narwhal_dag::runtime::ConsensusMessage::ReloadCommittee(new_committee)
+                            ).await;
+                            tracing::info!("Committee hot-reloaded after registration");
+                        }
+                    }
                     axum::Json(serde_json::json!({
                         "ok": true,
                         "message": format!("registered as validator #{}", count),
-                        "note": "node restart required to activate",
+                        "note": "committee reloaded (no restart needed)",
+                    }))
+                }
+            }
+        }))
+        .route("/api/deregister_validator", axum::routing::post({
+            let reg_path = genesis_path.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("registered_validators.json");
+            let reload_genesis_path = genesis_path.clone();
+            let reload_msg_tx = msg_tx.clone();
+            let reload_committee = committee_shared.clone();
+            move |body: axum::body::Bytes| {
+                let reg_path = reg_path.clone();
+                let reload_genesis_path = reload_genesis_path.clone();
+                let reload_msg_tx = reload_msg_tx.clone();
+                let reload_committee = reload_committee.clone();
+                async move {
+                    #[derive(serde::Deserialize)]
+                    struct DeregisterRequest {
+                        public_key: Option<String>,
+                        network_address: Option<String>,
+                    }
+                    let req: Result<DeregisterRequest, _> = serde_json::from_slice(&body);
+                    let dr = match req {
+                        Ok(dr) => dr,
+                        Err(e) => return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("invalid JSON: {e}"),
+                        })),
+                    };
+                    if dr.public_key.is_none() && dr.network_address.is_none() {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "must provide public_key and/or network_address",
+                        }));
+                    }
+                    let mut registered: Vec<crate::genesis_committee::RegisteredValidator> =
+                        std::fs::read_to_string(&reg_path)
+                            .ok()
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                    let before = registered.len();
+                    registered.retain(|r| {
+                        if let Some(ref pk) = dr.public_key {
+                            let pk_norm = pk.strip_prefix("0x").unwrap_or(pk).to_lowercase();
+                            let r_norm = r.public_key.strip_prefix("0x")
+                                .unwrap_or(&r.public_key).to_lowercase();
+                            if pk_norm == r_norm {
+                                return false;
+                            }
+                        }
+                        if let Some(ref addr) = dr.network_address {
+                            if &r.network_address == addr {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                    let removed = before - registered.len();
+                    if removed == 0 {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": "no matching validator found",
+                        }));
+                    }
+                    if let Err(e) = std::fs::write(
+                        &reg_path,
+                        serde_json::to_string_pretty(&registered).unwrap_or_default(),
+                    ) {
+                        return axum::Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("failed to save: {e}"),
+                        }));
+                    }
+                    tracing::info!(
+                        "Deregistered {} validator(s) (remaining: {})",
+                        removed,
+                        registered.len(),
+                    );
+                    // Hot-reload committee into consensus
+                    if let Ok(new_manifest) = crate::genesis_committee::GenesisCommitteeManifest::load_with_registered(&reload_genesis_path) {
+                        if let Ok(new_committee) = new_manifest.to_committee() {
+                            *reload_committee.write().await = new_committee.clone();
+                            let _ = reload_msg_tx.send(
+                                misaka_dag::narwhal_dag::runtime::ConsensusMessage::ReloadCommittee(new_committee)
+                            ).await;
+                            tracing::info!("Committee hot-reloaded after deregistration");
+                        }
+                    }
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "message": format!("removed {} validator(s)", removed),
+                        "remaining": registered.len(),
+                        "note": "committee reloaded (no restart needed)",
                     }))
                 }
             }
@@ -2261,15 +2374,19 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             }
         }))
         .route("/api/get_address_balance", axum::routing::post({
+            let utxo_set = utxo_set_rpc.clone();
+            let balance_chain_id = cli.chain_id;
             move |body: axum::Json<serde_json::Value>| {
+                let utxo_set = utxo_set.clone();
                 async move {
                     let address = body.get("address").and_then(|v| v.as_str()).unwrap_or("");
+                    let result = query_utxos_by_address(&utxo_set, address, balance_chain_id).await;
+                    let balance = result.get("balance").and_then(|v| v.as_u64()).unwrap_or(0);
                     axum::Json(serde_json::json!({
                         "address": address,
-                        "balance": 0,
-                        "confirmed": 0,
+                        "balance": balance,
+                        "confirmed": balance,
                         "unconfirmed": 0,
-                        "note": "Balance indexer not yet implemented"
                     }))
                 }
             }
@@ -2739,18 +2856,16 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 // SEC-FIX: Derive the commit leader's address from their pubkey.
                 // This is used to verify SystemEmission outputs go to the correct
                 // proposer, preventing Byzantine reward redirection.
+                let committee_guard = committee_shared.read().await;
                 let leader_address: Option<[u8; 32]> = {
                     let author_idx = output.leader.author as usize;
-                    if author_idx < committee.authorities.len() {
-                        let pk = &committee.authorities[author_idx].public_key;
+                    if author_idx < committee_guard.authorities.len() {
+                        let pk = &committee_guard.authorities[author_idx].public_key;
                         if !pk.is_empty() {
                             use sha3::{Digest, Sha3_256};
                             let addr: [u8; 32] = Sha3_256::digest(pk).into();
                             Some(addr)
                         } else {
-                            // SEC-FIX: Empty pubkey in committee is a configuration error.
-                            // On mainnet this will cause SystemEmission to be rejected
-                            // (leader_address=None triggers StructuralInvalid in FIX 42).
                             tracing::error!(
                                 "Commit leader author={} has empty public key in committee — \
                                  leader_address will be None (SystemEmission will be rejected on mainnet)",
@@ -2762,7 +2877,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                         tracing::warn!(
                             "Commit leader author={} exceeds committee size={}",
                             author_idx,
-                            committee.authorities.len()
+                            committee_guard.authorities.len()
                         );
                         None
                     }
@@ -2780,8 +2895,8 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 // to prevent double emission in the same commit.
                 if let Some(addr) = leader_address.filter(|_| !exec_result.had_system_emission) {
                     let author_idx = output.leader.author as usize;
-                    let leader_pk = if author_idx < committee.authorities.len() {
-                        let pk = &committee.authorities[author_idx].public_key;
+                    let leader_pk = if author_idx < committee_guard.authorities.len() {
+                        let pk = &committee_guard.authorities[author_idx].public_key;
                         if !pk.is_empty() { Some(pk.clone()) } else { None }
                     } else {
                         None
@@ -2796,6 +2911,8 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                         );
                     }
                 }
+
+                drop(committee_guard);
 
                 // Update shared persistent block height
                 block_height_writer.store(
@@ -2924,6 +3041,16 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     }
                 }
             }
+            // Graceful shutdown: save UTXO snapshot so balances survive restart.
+            // This is a single save (not per-commit clone) so OOM is not a concern.
+            if let Err(e) = tx_executor.utxo_set().save_to_file(&utxo_snapshot_path) {
+                tracing::warn!("Failed to save UTXO snapshot on shutdown: {}", e);
+            } else {
+                tracing::info!(
+                    "UTXO snapshot saved on shutdown (height={})",
+                    tx_executor.utxo_set().height,
+                );
+            }
         } => {
             info!("Commit channel closed");
         }
@@ -2957,7 +3084,11 @@ async fn query_utxos_by_address(
         hex::decode(address_str)
             .ok()
             .and_then(|b| <[u8; 32]>::try_from(b).ok())
-    } else if address_str.starts_with("misakatest1") || address_str.starts_with("misaka1") {
+    } else if let Some(hex_part) = address_str.strip_prefix("misakatest1") {
+        hex::decode(hex_part)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+    } else if address_str.starts_with("misaka1") || address_str.starts_with("msk1") {
         misaka_types::address::decode_address(address_str, chain_id).ok()
     } else {
         None

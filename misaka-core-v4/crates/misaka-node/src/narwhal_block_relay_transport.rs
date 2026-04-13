@@ -654,6 +654,15 @@ pub fn spawn_narwhal_block_relay_transport(
     inbound_tx: mpsc::Sender<InboundNarwhalRelayEvent>,
     mut outbound_rx: mpsc::Receiver<OutboundNarwhalRelayEvent>,
 ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    spawn_narwhal_block_relay_transport_with_updates(config, inbound_tx, outbound_rx, None)
+}
+
+pub fn spawn_narwhal_block_relay_transport_with_updates(
+    config: NarwhalRelayTransportConfig,
+    inbound_tx: mpsc::Sender<InboundNarwhalRelayEvent>,
+    mut outbound_rx: mpsc::Receiver<OutboundNarwhalRelayEvent>,
+    relay_update_rx: Option<mpsc::Receiver<Vec<RelayPeer>>>,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
     let std_listener = std::net::TcpListener::bind(config.listen_addr)?;
     std_listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(std_listener)?;
@@ -664,14 +673,14 @@ pub fn spawn_narwhal_block_relay_transport(
 
     Ok(tokio::spawn(async move {
         let registry = Arc::new(RwLock::new(PeerRegistry::new()));
-        let peer_by_pk: Arc<HashMap<Vec<u8>, RelayPeer>> = Arc::new(
+        let peer_by_pk: Arc<RwLock<HashMap<Vec<u8>, RelayPeer>>> = Arc::new(RwLock::new(
             config
                 .peers
                 .iter()
                 .cloned()
                 .map(|peer| (peer.public_key.to_bytes(), peer))
                 .collect(),
-        );
+        ));
 
         let outbound_registry = registry.clone();
         tokio::spawn(async move {
@@ -719,6 +728,44 @@ pub fn spawn_narwhal_block_relay_transport(
             let config = config.clone();
             tokio::spawn(async move {
                 connect_outbound_peer(peer, config, registry, inbound_tx).await;
+            });
+        }
+
+        // Dynamic peer updates: spawn new outbound connections for newly
+        // registered validators without restarting the relay.
+        if let Some(mut update_rx) = relay_update_rx {
+            let known_indices: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<u32>>> =
+                std::sync::Arc::new(tokio::sync::Mutex::new(
+                    config.peers.iter().map(|p| p.authority_index).collect(),
+                ));
+            let update_registry = registry.clone();
+            let update_inbound_tx = inbound_tx.clone();
+            let update_config = config.clone();
+            let update_peer_by_pk = peer_by_pk.clone();
+            tokio::spawn(async move {
+                while let Some(new_peers) = update_rx.recv().await {
+                    let mut known = known_indices.lock().await;
+                    for peer in new_peers {
+                        if known.contains(&peer.authority_index) {
+                            continue;
+                        }
+                        info!(
+                            "Hot-reload: dialing new validator {} at {}",
+                            peer.authority_index, peer.address,
+                        );
+                        known.insert(peer.authority_index);
+                        update_peer_by_pk
+                            .write()
+                            .await
+                            .insert(peer.public_key.to_bytes(), peer.clone());
+                        let reg = update_registry.clone();
+                        let tx = update_inbound_tx.clone();
+                        let cfg = update_config.clone();
+                        tokio::spawn(async move {
+                            connect_outbound_peer(peer, cfg, reg, tx).await;
+                        });
+                    }
+                }
             });
         }
 
@@ -860,7 +907,7 @@ pub fn spawn_narwhal_block_relay_transport(
                         let peer_id = derive_peer_id(&hs.peer_pk, config.chain_id);
                         let (peer_tx, peer_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
 
-                        let known_peer = peer_by_pk.get(&hs.peer_pk.to_bytes()).cloned();
+                        let known_peer = peer_by_pk.read().await.get(&hs.peer_pk.to_bytes()).cloned();
                         let (peer_for_session, registry_handle) = match known_peer {
                             Some(peer) => {
                                 registry.write().await.insert(peer.authority_index, peer_tx);

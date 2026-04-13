@@ -63,6 +63,9 @@ pub enum ConsensusMessage {
         /// freshly-detected equivocation against a prior vote.
         reply: oneshot::Sender<bool>,
     },
+    /// Hot-reload the committee without restarting the node.
+    /// Triggered by `/api/register_validator` or `/api/deregister_validator`.
+    ReloadCommittee(Committee),
 }
 
 /// Consensus status snapshot.
@@ -403,6 +406,9 @@ impl ConsensusRuntime {
                             };
                             let _ = reply.send(is_equivocation);
                         }
+                        Some(ConsensusMessage::ReloadCommittee(new_committee)) => {
+                            self.reload_committee(new_committee);
+                        }
                         Some(ConsensusMessage::Shutdown) | None => {
                             info!("Consensus runtime shutting down");
                             self.flush_to_store();
@@ -422,6 +428,23 @@ impl ConsensusRuntime {
         }
 
         info!("Consensus runtime stopped");
+    }
+
+    /// Hot-reload the committee across all consensus subsystems.
+    fn reload_committee(&mut self, new_committee: Committee) {
+        let old_size = self.committee.size();
+        let new_size = new_committee.size();
+        info!(
+            "Hot-reloading committee: {} -> {} validators",
+            old_size, new_size,
+        );
+        self.core.change_epoch(new_committee.clone());
+        self.dag_state.update_committee(new_committee.clone());
+        self.block_manager.update_committee(new_committee.clone());
+        self.threshold_clock = ThresholdClock::new(new_committee.clone());
+        self.committee = new_committee.clone();
+        self.config.committee = new_committee;
+        info!("Committee hot-reload complete");
     }
 
     /// Handle a new block from the network.

@@ -432,4 +432,182 @@ network_address = "127.0.0.2:16111"
         assert_eq!(identities[2].stake_weight, floor + 1000 + 1);
         assert_ne!(identities[0].validator_id, identities[1].validator_id);
     }
+
+    // ── Validator registration tests ──
+
+    #[test]
+    fn test_registered_validator_serialization() {
+        let rv = RegisteredValidator {
+            public_key: format!("0x{}", hex::encode(vec![0xBB; PK_LEN])),
+            network_address: "10.0.0.1:16110".to_string(),
+        };
+        let json = serde_json::to_string(&rv).unwrap();
+        let parsed: RegisteredValidator = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.public_key, rv.public_key);
+        assert_eq!(parsed.network_address, rv.network_address);
+    }
+
+    #[test]
+    fn test_load_with_registered_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("genesis_committee.toml");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&path, toml_content).unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&path).unwrap();
+        assert_eq!(m.validators.len(), 1);
+    }
+
+    #[test]
+    fn test_load_with_registered_merges_new_validators() {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis_path = dir.path().join("genesis_committee.toml");
+        let reg_path = dir.path().join("registered_validators.json");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&genesis_path, toml_content).unwrap();
+
+        let mut pk1 = vec![0xAA; PK_LEN];
+        pk1[0] = 0x11;
+        let mut pk2 = vec![0xAA; PK_LEN];
+        pk2[0] = 0x22;
+        let registered = vec![
+            RegisteredValidator {
+                public_key: format!("0x{}", hex::encode(&pk1)),
+                network_address: "10.0.0.1:16110".to_string(),
+            },
+            RegisteredValidator {
+                public_key: format!("0x{}", hex::encode(&pk2)),
+                network_address: "10.0.0.2:16110".to_string(),
+            },
+        ];
+        std::fs::write(&reg_path, serde_json::to_string(&registered).unwrap()).unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
+        assert_eq!(m.validators.len(), 3);
+        assert_eq!(m.validators[0].authority_index, 0);
+        assert_eq!(m.validators[1].authority_index, 1);
+        assert_eq!(m.validators[2].authority_index, 2);
+        assert_eq!(m.validators[1].network_address, "10.0.0.1:16110");
+        assert_eq!(m.validators[2].network_address, "10.0.0.2:16110");
+        assert_eq!(m.validators[1].stake, 1000);
+    }
+
+    #[test]
+    fn test_load_with_registered_skips_duplicate_pk() {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis_path = dir.path().join("genesis_committee.toml");
+        let reg_path = dir.path().join("registered_validators.json");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&genesis_path, toml_content).unwrap();
+
+        let registered = vec![RegisteredValidator {
+            public_key: format!("0x{pk0}"),
+            network_address: "10.0.0.99:16110".to_string(),
+        }];
+        std::fs::write(&reg_path, serde_json::to_string(&registered).unwrap()).unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
+        assert_eq!(m.validators.len(), 1, "duplicate PK should not be added");
+    }
+
+    #[test]
+    fn test_load_with_registered_validates_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis_path = dir.path().join("genesis_committee.toml");
+        let reg_path = dir.path().join("registered_validators.json");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&genesis_path, toml_content).unwrap();
+
+        let mut pk1 = vec![0xAA; PK_LEN];
+        pk1[0] = 0x33;
+        let registered = vec![RegisteredValidator {
+            public_key: format!("0x{}", hex::encode(&pk1)),
+            network_address: "10.0.0.5:16110".to_string(),
+        }];
+        std::fs::write(&reg_path, serde_json::to_string(&registered).unwrap()).unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
+        assert_eq!(m.validators.len(), 2);
+        assert!(m.validate().is_ok(), "merged manifest should pass validation");
+        let committee = m.to_committee().unwrap();
+        assert_eq!(committee.size(), 2);
+    }
+
+    #[test]
+    fn test_load_with_registered_ignores_corrupt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis_path = dir.path().join("genesis_committee.toml");
+        let reg_path = dir.path().join("registered_validators.json");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&genesis_path, toml_content).unwrap();
+        std::fs::write(&reg_path, "not valid json!!!").unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
+        assert_eq!(m.validators.len(), 1, "corrupt JSON should be ignored");
+    }
 }

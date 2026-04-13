@@ -13,13 +13,14 @@
 //! The API endpoint validates and enqueues; the background worker
 //! processes requests sequentially to avoid UTXO locking conflicts.
 //!
-//! # Rate Limiting
+//! # Rate Limiting (optional)
 //!
-//! Two independent limits:
-//! - **Per-IP**: 1 request per `cooldown_secs` (default 24h).
+//! When `cooldown_secs > 0`, two independent limits apply:
+//! - **Per-IP**: 1 request per `cooldown_secs`.
 //! - **Per-address**: 1 request per `cooldown_secs`.
 //!
-//! Both must pass for the request to be accepted.
+//! Default `cooldown_secs` is **0** (disabled). Override with `MISAKA_FAUCET_COOLDOWN_SECS`.
+//! HTTP-layer rate limiting for `/faucet` routes is disabled in the API middleware.
 
 use axum::{
     extract::{ConnectInfo, State},
@@ -66,7 +67,7 @@ impl Default for FaucetConfig {
     fn default() -> Self {
         Self {
             drip_amount: 10_000_000_000, // 10 MISAKA (9 decimals)
-            cooldown_secs: 300,          // 5 minutes (testnet default)
+            cooldown_secs: 0,            // 0 = no per-IP / per-address cooldown
             max_queue_depth: 100,
         }
     }
@@ -113,6 +114,10 @@ impl FaucetRateLimiter {
         }
     }
 
+    fn cooldown_disabled(&self) -> bool {
+        self.cooldown.is_zero()
+    }
+
     /// SEC-FIX: Atomic check-and-record to prevent TOCTOU race condition.
     ///
     /// Previously, `check()` and `record()` were separate operations with
@@ -125,6 +130,9 @@ impl FaucetRateLimiter {
     /// `check_only` verifies cooldown without consuming the slot.
     /// `record` is called AFTER successful queue reservation.
     pub async fn check_only(&self, ip: &str, address: &str) -> Result<(), u64> {
+        if self.cooldown_disabled() {
+            return Ok(());
+        }
         let now = Instant::now();
         let state = self.state.lock().await;
         let (ref ip_map, ref addr_map) = *state;
@@ -148,6 +156,9 @@ impl FaucetRateLimiter {
 
     /// Record cooldown after successful queue acceptance.
     pub async fn record(&self, ip: &str, address: &str) {
+        if self.cooldown_disabled() {
+            return;
+        }
         let now = Instant::now();
         let mut state = self.state.lock().await;
         let (ref mut ip_map, ref mut addr_map) = *state;
@@ -157,6 +168,9 @@ impl FaucetRateLimiter {
 
     /// Periodic cleanup of expired entries.
     pub async fn cleanup(&self) {
+        if self.cooldown_disabled() {
+            return;
+        }
         let cutoff = Instant::now() - self.cooldown * 2;
         let mut state = self.state.lock().await;
         state.0.retain(|_, v| *v > cutoff);
@@ -619,7 +633,11 @@ mod tests {
             },
             proxy.clone(),
         );
-        AppState { proxy, faucet }
+        AppState {
+            proxy,
+            faucet,
+            ws_broadcaster: crate::routes::ws::WsBroadcaster::new(),
+        }
     }
 
     async fn test_proxy() -> Arc<crate::proxy::NodeProxy> {
@@ -777,7 +795,11 @@ mod tests {
                 ..FaucetConfig::default()
             },
         };
-        let app = router().with_state(AppState { proxy, faucet });
+        let app = router().with_state(AppState {
+            proxy,
+            faucet,
+            ws_broadcaster: crate::routes::ws::WsBroadcaster::new(),
+        });
 
         let resp = app
             .oneshot({
@@ -811,7 +833,11 @@ mod tests {
             queue_depth: queue_depth.clone(),
             config: FaucetConfig::default(),
         };
-        let app = router().with_state(AppState { proxy, faucet });
+        let app = router().with_state(AppState {
+            proxy,
+            faucet,
+            ws_broadcaster: crate::routes::ws::WsBroadcaster::new(),
+        });
 
         let resp = app
             .oneshot({
@@ -853,7 +879,11 @@ mod tests {
             queue_depth: queue_depth.clone(),
             config: FaucetConfig::default(),
         };
-        let app = router().with_state(AppState { proxy, faucet });
+        let app = router().with_state(AppState {
+            proxy,
+            faucet,
+            ws_broadcaster: crate::routes::ws::WsBroadcaster::new(),
+        });
 
         let request = {
             let mut req = faucet_request(&test_address(0x66));

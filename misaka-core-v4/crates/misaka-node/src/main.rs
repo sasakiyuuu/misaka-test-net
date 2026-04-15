@@ -1243,6 +1243,40 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
         std::sync::Arc::new(IdentityBlockSigner { identity });
 
     let store_path = data_dir.join("narwhal_consensus");
+
+    // Guard: on a fresh start (no chain.db), wipe any leftover RocksDB data.
+    // Without this, a genesis reset that deletes chain.db but leaves
+    // narwhal_consensus/ intact causes the tx/addr index to contain entries
+    // from the old chain while the UTXO set starts empty — producing the
+    // "balance 0 but 199 historical transactions" inconsistency.
+    {
+        let chain_db = data_dir.join("chain.db");
+        if !chain_db.exists() && store_path.exists() {
+            warn!(
+                "Fresh start detected (no chain.db) but stale RocksDB found at {} — \
+                 wiping to prevent index inconsistency",
+                store_path.display()
+            );
+            if let Err(e) = std::fs::remove_dir_all(&store_path) {
+                error!(
+                    "Failed to remove stale RocksDB at {}: {}",
+                    store_path.display(),
+                    e
+                );
+                anyhow::bail!(
+                    "Cannot remove stale narwhal_consensus directory: {e}. \
+                     Delete it manually and restart."
+                );
+            }
+            let snapshot = data_dir.join("narwhal_utxo_snapshot.json");
+            if snapshot.exists() {
+                warn!("Removing stale UTXO snapshot: {}", snapshot.display());
+                let _ = std::fs::remove_file(&snapshot);
+            }
+            info!("Stale data removed — proceeding with clean genesis");
+        }
+    }
+
     info!("startup[4/6]: opening RocksDB at {}...", store_path.display());
     let rocks_store = std::sync::Arc::new(
         misaka_dag::narwhal_dag::rocksdb_store::RocksDbConsensusStore::open(&store_path)?

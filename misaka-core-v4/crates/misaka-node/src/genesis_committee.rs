@@ -115,10 +115,24 @@ impl GenesisCommitteeManifest {
                         .iter()
                         .map(|v| v.public_key.clone())
                         .collect();
+                    let existing_addrs: HashSet<String> = manifest
+                        .validators
+                        .iter()
+                        .map(|v| v.network_address.clone())
+                        .collect();
                     let genesis_count = manifest.validators.len();
                     let mut next_index = genesis_count as u32;
+                    let mut seen_addrs = existing_addrs;
                     for rv in registered {
                         if existing_pks.contains(&rv.public_key) {
+                            continue;
+                        }
+                        if !seen_addrs.insert(rv.network_address.clone()) {
+                            tracing::warn!(
+                                "Skipping registered validator with duplicate \
+                                 network_address: {}",
+                                rv.network_address,
+                            );
                             continue;
                         }
                         manifest.validators.push(GenesisValidator {
@@ -609,5 +623,57 @@ network_address = "127.0.0.1:16111"
 
         let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
         assert_eq!(m.validators.len(), 1, "corrupt JSON should be ignored");
+    }
+
+    #[test]
+    fn test_load_with_registered_skips_duplicate_network_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis_path = dir.path().join("genesis_committee.toml");
+        let reg_path = dir.path().join("registered_validators.json");
+
+        let pk0 = hex::encode(vec![0x00u8; PK_LEN]);
+        let toml_content = format!(
+            r#"
+[committee]
+epoch = 0
+
+[[committee.validators]]
+authority_index = 0
+public_key = "0x{pk0}"
+stake = 1000
+network_address = "127.0.0.1:16111"
+"#
+        );
+        std::fs::write(&genesis_path, toml_content).unwrap();
+
+        let mut pk1 = vec![0xAA; PK_LEN];
+        pk1[0] = 0x11;
+        let mut pk2 = vec![0xAA; PK_LEN];
+        pk2[0] = 0x22;
+        let mut pk3 = vec![0xAA; PK_LEN];
+        pk3[0] = 0x33;
+        let registered = vec![
+            RegisteredValidator {
+                public_key: format!("0x{}", hex::encode(&pk1)),
+                network_address: "10.0.0.1:16110".to_string(),
+            },
+            RegisteredValidator {
+                public_key: format!("0x{}", hex::encode(&pk2)),
+                network_address: "10.0.0.1:16110".to_string(), // duplicate of pk1
+            },
+            RegisteredValidator {
+                public_key: format!("0x{}", hex::encode(&pk3)),
+                network_address: "127.0.0.1:16111".to_string(), // duplicate of genesis
+            },
+        ];
+        std::fs::write(&reg_path, serde_json::to_string(&registered).unwrap()).unwrap();
+
+        let m = GenesisCommitteeManifest::load_with_registered(&genesis_path).unwrap();
+        assert_eq!(
+            m.validators.len(),
+            2,
+            "only pk1 should be added; pk2 (dup addr of pk1) and pk3 (dup addr of genesis) skipped"
+        );
+        assert!(m.validate().is_ok(), "no duplicate addresses after dedup");
     }
 }

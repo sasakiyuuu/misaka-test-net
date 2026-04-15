@@ -45,7 +45,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.8.7"
+version = "0.8.8"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["MISAKA Network Contributors"]

@@ -178,6 +178,37 @@ try {
   }
 } catch (e) {}
 function apiQS() { return API_ORIGIN ? '&api=' + encodeURIComponent(API_ORIGIN) : ''; }
+
+/** misaka-api は GET /v1/tx/:hash 。ノード直 POST /api/get_tx_status のみがトップに無い。 */
+function fetchTxStatus(hash) {
+  if (API_ORIGIN) {
+    return fetch(API_ORIGIN + '/v1/tx/' + encodeURIComponent(hash)).then(function (r) {
+      if (!r.ok) throw new Error('tx http ' + r.status);
+      return r.json();
+    });
+  }
+  return fetch(NODE_API + '/get_tx_status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ txHash: hash })
+  }).then(function (r) { return r.json(); });
+}
+
+function fetchAddressHistory(addr) {
+  if (API_ORIGIN) {
+    return fetch(
+      API_ORIGIN + '/v1/wallet/' + encodeURIComponent(addr) + '/history?page=1&page_size=50'
+    ).then(function (r) {
+      if (!r.ok) throw new Error('history http ' + r.status);
+      return r.json();
+    });
+  }
+  return fetch(NODE_API + '/get_address_history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address: addr, page: 1, pageSize: 50 })
+  }).then(function (r) { return r.json(); });
+}
 var copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
 var checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>';
 
@@ -250,11 +281,8 @@ function showTx(hash){
   var main = $('#main');
   main.innerHTML = '<div class="loading"><div class="spinner"></div>トランザクションを取得中…</div>';
 
-  fetch(NODE_API+'/get_tx_status', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({txHash:hash})
-  }).then(function(r){return r.json()}).then(function(d){
+  fetchTxStatus(hash).then(function(d){
+    if (d && d.error) throw new Error(d.error.message || 'api error');
     var status = d.status || 'unknown';
     var html = '';
 
@@ -345,11 +373,7 @@ function showAddr(addr){
 
   Promise.all([
     fetch((API_ORIGIN || '') + '/v1/wallet/'+encodeURIComponent(addr)).then(function(r){return r.json()}),
-    fetch(NODE_API+'/get_address_history', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({address:addr,page:1,pageSize:50})
-    }).then(function(r){return r.json()}).catch(function(){return {transactions:[],total:0}})
+    fetchAddressHistory(addr).catch(function(){return {transactions:[],total:0}})
   ]).then(function(results){
     var d = results[0];
     var hist = results[1];

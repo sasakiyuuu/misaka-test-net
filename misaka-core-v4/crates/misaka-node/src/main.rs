@@ -261,8 +261,8 @@ struct Cli {
     #[arg(long, default_value = "1000000")]
     faucet_amount: u64,
 
-    /// Faucet cooldown per address in milliseconds
-    #[arg(long, default_value = "300000")]
+    /// Faucet cooldown per address in milliseconds (0 = no cooldown)
+    #[arg(long, default_value = "10000")]
     faucet_cooldown_ms: u64,
 
     // ─── P2P overrides ───────────────────────────────────
@@ -1325,6 +1325,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 authority_index: validator.authority_index,
                 address,
                 public_key,
+                force_dial: false,
             })
         })
         .collect();
@@ -1354,10 +1355,11 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
     //     `BlockVerifier` because their authority_index is out of range —
     //     so observer seeds cannot forge consensus participation.
     //
-    // Note: the outbound-dial filter inside `spawn_narwhal_block_relay_transport`
-    // only dials peers whose `authority_index > self.authority_index`. Since
-    // synthetic observer indexes start at `manifest.validators.len()`, they
-    // are always > our authority_index, so they will be dialed.
+    // All --seeds peers have `force_dial = true`, which bypasses the
+    // `authority_index > self.authority_index` ordering filter in the
+    // Narwhal relay transport. This ensures a validator behind NAT can
+    // always proactively dial the seed, even when the seed's
+    // authority_index is lower than ours.
     if !cli.seeds.is_empty() && cli.seeds.len() == cli.seed_pubkeys.len() {
         let mut synthetic_index = manifest.validators.len() as u32;
         for (addr_s, pk_s) in cli.seeds.iter().zip(cli.seed_pubkeys.iter()) {
@@ -1400,8 +1402,9 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
             {
                 let old_addr = existing.address;
                 existing.address = addr;
+                existing.force_dial = true;
                 info!(
-                    "--seeds: overriding committee authority_index={} address {} → {}",
+                    "--seeds: overriding committee authority_index={} address {} → {} (force_dial=true)",
                     existing.authority_index, old_addr, addr,
                 );
             } else {
@@ -1413,6 +1416,7 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                     authority_index: synthetic_index,
                     address: addr,
                     public_key: pk,
+                    force_dial: true,
                 });
                 synthetic_index = synthetic_index.saturating_add(1);
             }
@@ -1949,8 +1953,16 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
         .route("/api/faucet", axum::routing::post({
             let narwhal_mempool = narwhal_mempool.clone();
             let faucet_chain_id = cli.chain_id;
+            let faucet_cooldown_ms = cli.faucet_cooldown_ms;
+            let faucet_cooldowns: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>> =
+                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+            let faucet_global_last: std::sync::Arc<std::sync::atomic::AtomicU64> =
+                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            const GLOBAL_FAUCET_MIN_INTERVAL_MS: u64 = 2000;
             move |body: axum::Json<serde_json::Value>| {
                 let narwhal_mempool = narwhal_mempool.clone();
+                let faucet_cooldowns = faucet_cooldowns.clone();
+                let faucet_global_last = faucet_global_last.clone();
                 async move {
                     let address_str = body.get("address").and_then(|v| v.as_str()).unwrap_or("");
                     let spending_pk_hex = body.get("spendingPubkey").and_then(|v| v.as_str());
@@ -1972,6 +1984,42 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                             }));
                         }
                     };
+
+                    // Global rate limit: at most one faucet tx every 2 seconds
+                    {
+                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                        let last = faucet_global_last.load(std::sync::atomic::Ordering::Relaxed);
+                        if now_ms.saturating_sub(last) < GLOBAL_FAUCET_MIN_INTERVAL_MS {
+                            return axum::Json(serde_json::json!({
+                                "accepted": false,
+                                "error": "rate limited: too many faucet requests globally",
+                            }));
+                        }
+                        faucet_global_last.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                    }
+
+                    // Per-address cooldown to prevent rapid-fire OOM
+                    if faucet_cooldown_ms > 0 {
+                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                        let mut cooldowns = faucet_cooldowns.lock().await;
+                        if let Some(&last_ms) = cooldowns.get(&addr) {
+                            let elapsed = now_ms.saturating_sub(last_ms);
+                            if elapsed < faucet_cooldown_ms {
+                                let remaining = faucet_cooldown_ms - elapsed;
+                                return axum::Json(serde_json::json!({
+                                    "accepted": false,
+                                    "error": format!("cooldown: retry after {}ms", remaining),
+                                    "cooldownRemainingMs": remaining,
+                                }));
+                            }
+                        }
+                        cooldowns.insert(addr, now_ms);
+                        // Evict stale entries (> 10x cooldown) to prevent unbounded growth
+                        if cooldowns.len() > 10_000 {
+                            let cutoff = now_ms.saturating_sub(faucet_cooldown_ms * 10);
+                            cooldowns.retain(|_, &mut ts| ts > cutoff);
+                        }
+                    }
 
                     let spending_pubkey = spending_pk_hex.and_then(|h| hex::decode(h).ok());
 
@@ -2997,11 +3045,12 @@ async fn start_narwhal_node(mut cli: Cli, p2p_config: P2pConfig) -> anyhow::Resu
                 }
 
                 // Update shared UtxoSet for RPC queries and mempool admission.
-                // The mempool and RPC share the same Arc, so one clone suffices.
-                // Clone is expensive (~600MB) so limit to: immediately on user
-                // TXs, or every 100th commit (~10s) for block-reward catchup.
+                // Clone is expensive (~800MB copy). Use block_in_place to yield the
+                // async worker thread so RPC handlers remain responsive during the copy.
                 if exec_result.txs_accepted > 0 || output.commit_index % 100 == 1 {
-                    let fresh = tx_executor.utxo_set().clone();
+                    let fresh = tokio::task::block_in_place(|| {
+                        tx_executor.utxo_set().clone()
+                    });
                     let mut shared = utxo_set_writer.write().await;
                     *shared = fresh;
                 }

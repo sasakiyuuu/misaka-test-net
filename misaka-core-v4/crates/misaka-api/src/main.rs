@@ -210,6 +210,7 @@ async fn main() -> Result<()> {
     // ── Assemble (ALL middleware connected) ──
     let app = Router::new()
         .merge(routes::chain::router())
+        .merge(routes::validator::router())
         .merge(routes::wallet::router())
         .merge(routes::tx::router())
         .merge(routes::explorer::router())

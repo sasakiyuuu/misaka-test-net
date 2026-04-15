@@ -7,8 +7,10 @@ info:
     All endpoints accept JSON and return JSON unless noted otherwise.
 
 servers:
+  - url: http://localhost:4000
+    description: misaka-api (proxies to node RPC on 127.0.0.1:3001)
   - url: http://localhost:3001
-    description: Local node RPC
+    description: Local node RPC (direct)
 
 paths:
   /health:
@@ -322,6 +324,52 @@ paths:
           description: Rate limited
         "504":
           description: Request timed out
+
+  /api/register_validator:
+    post:
+      summary: Register a validator (forwarded to node RPC)
+      description: |
+        Exposed by **misaka-api** on public deployments. The node listens on loopback only;
+        operators call `http://<host>:4000/api/register_validator` instead of hitting port 3001.
+      tags: [Governance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: ML-DSA-65 public key and network address (see node docs).
+      responses:
+        "200":
+          description: Registration result
+        "502":
+          description: Upstream node unavailable
+
+  /api/deregister_validator:
+    post:
+      summary: Deregister a validator (forwarded to node RPC)
+      tags: [Governance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Deregistration result
+        "502":
+          description: Upstream node unavailable
+
+  /api/get_committee:
+    get:
+      summary: List current committee validators (forwarded to node RPC)
+      tags: [Governance]
+      responses:
+        "200":
+          description: Committee JSON
+        "502":
+          description: Upstream node unavailable
 
 components:
   securitySchemes:

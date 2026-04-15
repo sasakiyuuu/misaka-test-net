@@ -38,6 +38,11 @@ pub struct RelayPeer {
     pub authority_index: u32,
     pub address: SocketAddr,
     pub public_key: ValidatorPqPublicKey,
+    /// When true, this peer is always dialed outbound regardless of the
+    /// `authority_index` ordering rule. Set for `--seeds`-derived peers
+    /// so the node proactively connects to operator seeds even when their
+    /// authority_index is lower than ours.
+    pub force_dial: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -707,20 +712,20 @@ pub fn spawn_narwhal_block_relay_transport_with_updates(
             }
         });
 
-        // SEC-FIX v0.5.7: dial filter has two modes.
-        //   - committee member: keep the original `peer.authority_index >
-        //     self.authority_index` ordering rule, which prevents both
-        //     sides of a pair from dialing each other simultaneously and
-        //     wasting connection slots.
-        //   - observer (`observer_self == true`): dial every committee
-        //     peer regardless of authority_index ordering, because the
-        //     observer's synthetic high authority_index would otherwise
-        //     filter out every real peer (`real_idx > sentinel_idx` is
-        //     always false).
+        // SEC-FIX v0.5.7: dial filter has three bypass paths.
+        //   1. `force_dial`: seed-derived peers (`--seeds`) are always
+        //      dialed so that a validator behind NAT can reach the
+        //      operator seed even when the seed's authority_index is
+        //      lower than ours.
+        //   2. `observer_self`: observer nodes dial every committee peer
+        //      regardless of authority_index ordering.
+        //   3. Default ordering rule (`peer.authority_index >
+        //      self.authority_index`): prevents both sides of a pair
+        //      from dialing each other simultaneously.
         for peer in config
             .peers
             .iter()
-            .filter(|peer| config.observer_self || peer.authority_index > config.authority_index)
+            .filter(|peer| peer.force_dial || config.observer_self || peer.authority_index > config.authority_index)
             .cloned()
         {
             let registry = registry.clone();
@@ -934,6 +939,7 @@ pub fn spawn_narwhal_block_relay_transport_with_updates(
                                     authority_index: OBSERVER_SENTINEL_AUTHORITY,
                                     address,
                                     public_key: hs.peer_pk.clone(),
+                                    force_dial: false,
                                 };
                                 let _ = inbound_tx
                                     .send(InboundNarwhalRelayEvent::PeerConnected {
@@ -1001,6 +1007,7 @@ mod tests {
             authority_index,
             address: SocketAddr::from(([127, 0, 0, 1], port)),
             public_key: keypair().0,
+            force_dial: false,
         }
     }
 
@@ -1038,6 +1045,7 @@ mod tests {
                 authority_index: 1,
                 address: "133.167.126.51:16110".parse().expect("addr"),
                 public_key: keypair().0,
+                force_dial: false,
             }],
             guard_config: misaka_p2p::GuardConfig::default(),
             accept_observers: true,

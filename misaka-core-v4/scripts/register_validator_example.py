@@ -25,7 +25,7 @@ Observer ノードをバリデータとして登録/解除するサンプル (Py
     --address 203.0.113.10:16110
 
   # 環境変数で seed URL を指定可能
-  MISAKA_SEED_URL=https://testnet.misaka-network.com \
+  MISAKA_SEED_URL=http://133.167.126.51:4000 \
     python3 scripts/register_validator_example.py ...
 """
 
@@ -42,7 +42,7 @@ except ImportError:
     print("Error: 'requests' package is required.  pip install requests", file=sys.stderr)
     sys.exit(1)
 
-DEFAULT_SEED_URL = "https://testnet.misaka-network.com"
+DEFAULT_SEED_URL = "http://133.167.126.51:4000"
 
 # validator.key binary format constants
 _KEY_MAGIC = b"MKEY"

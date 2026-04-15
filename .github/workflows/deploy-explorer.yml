@@ -1,0 +1,62 @@
+name: deploy-explorer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "misaka-core-v4/frontend/**"
+      - "misaka-wallet/**"
+      - ".github/workflows/deploy-explorer.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-explorer
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && 'deploy-explorer (manual)' || 'deploy-explorer' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: misaka-core-v4/frontend/explorer/package-lock.json
+
+      - name: Install & build Next.js Explorer
+        working-directory: misaka-core-v4/frontend/explorer
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy Next.js Explorer (port 80/443)
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            misaka-core-v4/frontend/explorer/out/ \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/home/ubuntu/misaka-explorer/
+
+      - name: Deploy tx.html + wallet to port 3000
+        run: |
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            misaka-core-v4/frontend/tx.html \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/var/www/misaka-web-node/tx.html
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

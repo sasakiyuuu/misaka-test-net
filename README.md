@@ -162,6 +162,7 @@ curl -s http://127.0.0.1:3001/api/health
 | Windows `was unexpected at this time` | パス中の括弧 | パスに `(` `)` を含まないフォルダに展開 |
 | GitHub の `releases/latest/download/...` が **404** | 別リポジトリの URL や、リリース未作成のタグ | **Assets** から直接取得: [misaka-test-net Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest) |
 
+
 ## seed / genesis 情報
 
 公開 testnet の正本:
@@ -171,7 +172,7 @@ curl -s http://127.0.0.1:3001/api/health
 - **Genesis**: `config/genesis_committee.toml` に同梱済み
 - **Chain ID**: `2`
 
-配布パッケージにはこれらが全て揃っているので、追加のファイル編集なしで起動できます。seed pubkey は Narwhal relay の PK-pinning 必須なので、`seeds.txt` と `seed-pubkeys.txt` が 1:1 対応していることが `start-public-node.*` の内部で自動チェックされます。不一致なら launcher は solo mode に fallback します。
+配布パッケージにはこれらが全て揃っているので、追加のファイル編集なしで起動できます。seed pubkey は Narwhal relay の PK-pinning 必須なので、`seeds.txt` と `seed-pubkeys.txt` が 1:1 対応していることが `start-public-node.*` の内部で自動チェックされます。不一致なら launcher は solo fallback せず停止します。両方空でも停止します。public package は official/public seed への join 専用です。
 
 ## バリデーター登録 / 削除 API
 
@@ -320,7 +321,7 @@ cd misaka-core-v4/misaka-core-v4
 cargo build --release -p misaka-node --features dag,testnet
 ```
 
-必要な依存: Rust stable (rustup)、clang / libclang、cmake。RocksDB bindgen が `stdbool.h` を要求するため、一部の minimal Linux image では追加設定が必要です。
+必要な依存: Rust stable (rustup)、`build-essential`、`pkg-config`、`libssl-dev`、`clang`、`libclang-dev`、`cmake`。RocksDB bindgen が `stdbool.h` を要求するため、一部の minimal Linux image では追加設定が必要です。
 
 ### `librocksdb-sys` で `stdbool.h not found` エラーが出る場合
 
@@ -330,15 +331,11 @@ cargo build --release -p misaka-node --features dag,testnet
 fatal error: 'stdbool.h' file not found
 ```
 
-これは bindgen の clang が libc headers の場所を知らないのが原因です。`BINDGEN_EXTRA_CLANG_ARGS` で include path を明示して回避できます:
+これは bindgen の clang が system header の場所を知らないのが原因です。`BINDGEN_EXTRA_CLANG_ARGS` で include path を明示して回避できます:
 
 ```bash
-# Ubuntu 22.04 / gcc 11
-BINDGEN_EXTRA_CLANG_ARGS='-isystem /usr/lib/gcc/x86_64-linux-gnu/11/include' \
-  cargo build --release -p misaka-node --features dag,testnet
-
-# Ubuntu 24.04 / gcc 13
-BINDGEN_EXTRA_CLANG_ARGS='-isystem /usr/lib/gcc/x86_64-linux-gnu/13/include' \
+# GCC が入っている環境では include path を自動検出できます
+BINDGEN_EXTRA_CLANG_ARGS="-isystem $(gcc -print-file-name=include)" \
   cargo build --release -p misaka-node --features dag,testnet
 
 # macOS (brew install llvm)

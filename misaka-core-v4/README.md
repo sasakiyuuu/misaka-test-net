@@ -2,7 +2,7 @@
 
 MISAKA testnet に初心者でも参加しやすい形で入るための配布 repo です。
 
-**現在のノード配布バージョン: v0.8.4**（[`misaka-test-net` Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest)）
+**現在のノード配布バージョン: v0.8.5**（[`misaka-test-net` Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest)）
 
 ## ダウンロード
 
@@ -49,7 +49,7 @@ curl http://127.0.0.1:3001/api/health
 #     "blocks":N,"round":N,"safeMode":{"halted":false}}
 
 curl http://127.0.0.1:3001/api/get_chain_info
-# => {"chainId":2,"version":"0.8.4","topology":"joined",
+# => {"chainId":2,"version":"0.8.5","topology":"joined",
 #     "nodeMode":"public","role":"observer","peerCount":1,...}
 ```
 
@@ -340,7 +340,7 @@ CI の Linux ランナーでは apt の `clang` + `libclang-dev` で問題なく
 
 - **ワークフロー**: [`.github/workflows/build-public-node.yml`](.github/workflows/build-public-node.yml) — Linux / Windows / macOS で `misaka-public-node-*` アーカイブを生成
 - **手動実行**: リポジトリの **Actions** → **build-public-node** → **Run workflow**
-- **Release 公開**: タグ `v*`（例: `v0.8.4`）を push → `[workspace.package] version`（`misaka-core-v4/Cargo.toml`）と一致させる（CI が検証）→ Assets と `SHA256SUMS`（Sigstore 署名付き）が付く
+- **Release 公開**: タグ `v*`（例: `v0.8.5`）を push → `[workspace.package] version`（`misaka-core-v4/Cargo.toml`）と一致させる（CI が検証）→ Assets と `SHA256SUMS`（Sigstore 署名付き）が付く
 - **404 で落とせない場合**: [Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest) の **Assets** から直接取得。別リポジトリの `releases/latest/download/...` は 404 になります
 
 ## 技術仕様

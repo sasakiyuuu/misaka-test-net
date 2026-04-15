@@ -1,7 +1,7 @@
 # MISAKA Testnet — public testnet genesis committee
 #
 # Single validator: the operator's Sakura VPS at 133.167.126.51:16110.
-# Node release: v0.8.4 (Mysticeti-equivalent DAG / Narwhal).
+# Node release: v0.8.5 (Mysticeti-equivalent DAG / Narwhal).
 # Chain ID: 2.
 #
 # Clients downloading this distribution will run in OBSERVER mode

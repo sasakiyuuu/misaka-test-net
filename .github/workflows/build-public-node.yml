@@ -1,17 +1,28 @@
 name: build-public-node
 
+# Public node 配布物 (misaka-node + misaka-api + config) を 3 OS でビルドし、
+# タグ v* の push 時に GitHub Release + SHA256SUMS + Sigstore 署名を公開する。
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "**"
     paths:
       - ".github/workflows/build-public-node.yml"
       - "misaka-core-v4/**"
     tags:
       - "v*"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Default to least-privilege. Individual jobs override as needed.
 permissions:
   contents: read
+
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && 'build-public-node (manual)' || (startsWith(github.ref, 'refs/tags/v') && format('release {0}', github.ref_name) || 'build-public-node') }}
 
 jobs:
   version-check:

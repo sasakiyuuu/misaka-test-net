@@ -418,6 +418,8 @@ fn path_to_tier(path: &str) -> RateTier {
     if path.contains("/submit")
         || path.contains("/submit_tx")
         || path.contains("/submit_ct_tx")
+        || path.contains("/register_validator")
+        || path.contains("/deregister_validator")
     {
         RateTier::Sensitive
     } else {
@@ -720,6 +722,9 @@ mod tests {
         assert_eq!(path_to_tier("/v1/tx/submit"), RateTier::Sensitive);
         assert_eq!(path_to_tier("/v1/faucet"), RateTier::General);
         assert_eq!(path_to_tier("/api/submit_tx"), RateTier::Sensitive);
+        assert_eq!(path_to_tier("/api/register_validator"), RateTier::Sensitive);
+        assert_eq!(path_to_tier("/api/deregister_validator"), RateTier::Sensitive);
+        assert_eq!(path_to_tier("/api/get_committee"), RateTier::General);
         assert_eq!(path_to_tier("/health"), RateTier::General);
     }
 

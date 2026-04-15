@@ -2,7 +2,7 @@
 
 MISAKA testnet に初心者でも参加しやすい形で入るための配布 repo です。
 
-**現在のノード配布バージョン: v0.8.5**（[`misaka-test-net` Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest)）
+**現在のノード配布バージョン: v0.8.6**（[`misaka-test-net` Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest)）
 
 ## ダウンロード
 
@@ -49,7 +49,7 @@ curl http://127.0.0.1:3001/api/health
 #     "blocks":N,"round":N,"safeMode":{"halted":false}}
 
 curl http://127.0.0.1:3001/api/get_chain_info
-# => {"chainId":2,"version":"0.8.5","topology":"joined",
+# => {"chainId":2,"version":"0.8.6","topology":"joined",
 #     "nodeMode":"public","role":"observer","peerCount":1,...}
 ```
 
@@ -177,10 +177,12 @@ curl -s http://127.0.0.1:3001/api/health
 
 テストネットでは、バリデーターの登録・削除を REST API で行えます。
 
+公開エンドポイントは運営の **`misaka-api`**（`http://133.167.126.51:4000`）に向けてください。`https://testnet.misaka-network.com` は DNS で名前解決できないため、現状は使えません。
+
 ### 登録
 
 ```bash
-curl -X POST https://testnet.misaka-network.com/api/register_validator \
+curl -X POST http://133.167.126.51:4000/api/register_validator \
   -H 'Content-Type: application/json' \
   -d '{
     "public_key": "0x<ML-DSA-65 公開鍵 hex>",
@@ -197,12 +199,12 @@ curl -X POST https://testnet.misaka-network.com/api/register_validator \
 
 ```bash
 # public_key で削除
-curl -X POST https://testnet.misaka-network.com/api/deregister_validator \
+curl -X POST http://133.167.126.51:4000/api/deregister_validator \
   -H 'Content-Type: application/json' \
   -d '{"public_key": "0x<削除したい公開鍵 hex>"}'
 
 # network_address で削除
-curl -X POST https://testnet.misaka-network.com/api/deregister_validator \
+curl -X POST http://133.167.126.51:4000/api/deregister_validator \
   -H 'Content-Type: application/json' \
   -d '{"network_address": "[2a01:4f9:c012:71e8::1]:6691"}'
 # => {"ok":true,"message":"removed 1 validator(s)","remaining":1,"note":"node restart required to take effect"}
@@ -213,7 +215,7 @@ curl -X POST https://testnet.misaka-network.com/api/deregister_validator \
 現在登録されているバリデーター一覧を取得できます。
 
 ```bash
-curl https://testnet.misaka-network.com/api/get_committee
+curl http://133.167.126.51:4000/api/get_committee
 # => {"epoch":0,"validators":[{"authority_index":0,...},{"authority_index":1,...}]}
 ```
 
@@ -340,7 +342,7 @@ CI の Linux ランナーでは apt の `clang` + `libclang-dev` で問題なく
 
 - **ワークフロー**: [`.github/workflows/build-public-node.yml`](.github/workflows/build-public-node.yml) — Linux / Windows / macOS で `misaka-public-node-*` アーカイブを生成
 - **手動実行**: リポジトリの **Actions** → **build-public-node** → **Run workflow**
-- **Release 公開**: タグ `v*`（例: `v0.8.5`）を push → `[workspace.package] version`（`misaka-core-v4/Cargo.toml`）と一致させる（CI が検証）→ Assets と `SHA256SUMS`（Sigstore 署名付き）が付く
+- **Release 公開**: タグ `v*`（例: `v0.8.6`）を push → `[workspace.package] version`（`misaka-core-v4/Cargo.toml`）と一致させる（CI が検証）→ Assets と `SHA256SUMS`（Sigstore 署名付き）が付く
 - **404 で落とせない場合**: [Releases](https://github.com/sasakiyuuu/misaka-test-net/releases/latest) の **Assets** から直接取得。別リポジトリの `releases/latest/download/...` は 404 になります
 
 ## 技術仕様

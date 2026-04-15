@@ -50,7 +50,7 @@ curl http://127.0.0.1:3001/api/health
 curl http://127.0.0.1:3001/api/get_chain_info
 # => {"chain":"MISAKA Network","chainId":2,
 #     "consensus":"Mysticeti-equivalent",
-#     "version":"0.8.5","topology":"joined","nodeMode":"public",
+#     "version":"0.8.6","topology":"joined","nodeMode":"public",
 #     "role":"observer","peerCount":1,
 #     "status":{"current_round":N,"highest_accepted_round":N,...}}
 ```

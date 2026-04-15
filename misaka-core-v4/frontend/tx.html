@@ -168,7 +168,16 @@ a.hash-link:hover{text-decoration:underline}
 </div>
 
 <script>
+var API_ORIGIN = '';
 var NODE_API = '/api';
+try {
+  var _ap = new URLSearchParams(location.search).get('api');
+  if (_ap && /^https?:\/\//i.test(_ap.trim())) {
+    API_ORIGIN = _ap.trim().replace(/\/$/, '');
+    NODE_API = API_ORIGIN + '/api';
+  }
+} catch (e) {}
+function apiQS() { return API_ORIGIN ? '&api=' + encodeURIComponent(API_ORIGIN) : ''; }
 var copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
 var checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>';
 
@@ -219,17 +228,18 @@ function txTypeBadge(t){
 
 function hashLink(hash, type){
   var href = type==='addr' ? '/tx.html?addr='+hash : '/tx.html?tx='+hash;
+  href += apiQS();
   var display = hash.length > 20 ? hash.slice(0,10)+'…'+hash.slice(-6) : hash;
   return '<a class="hash-link" href="'+href+'">'+display+'</a>';
 }
 
 function addrLink(addr){
   var display = addr.length > 24 ? addr.slice(0,14)+'…'+addr.slice(-6) : addr;
-  return '<a class="hash-link" href="/tx.html?addr='+encodeURIComponent(addr)+'">'+display+'</a>';
+  return '<a class="hash-link" href="/tx.html?addr='+encodeURIComponent(addr)+apiQS()+'">'+display+'</a>';
 }
 
 function loadChainInfo(){
-  fetch('/v1/chain/info').then(function(r){return r.json()}).then(function(d){
+  fetch((API_ORIGIN || '') + '/v1/chain/info').then(function(r){return r.json()}).then(function(d){
     if(d.blockHeight) $('#h-height').textContent = Number(d.blockHeight).toLocaleString();
     if(d.validatorCount) $('#h-validators').textContent = d.validatorCount;
   }).catch(function(){});
@@ -334,7 +344,7 @@ function showAddr(addr){
   main.innerHTML = '<div class="loading"><div class="spinner"></div>アドレス情報を取得中…</div>';
 
   Promise.all([
-    fetch('/v1/wallet/'+encodeURIComponent(addr)).then(function(r){return r.json()}),
+    fetch((API_ORIGIN || '') + '/v1/wallet/'+encodeURIComponent(addr)).then(function(r){return r.json()}),
     fetch(NODE_API+'/get_address_history', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -372,7 +382,7 @@ function showAddr(addr){
         var label = tx.txType || 'Transfer';
         if(label === 'TransparentTransfer') label = 'Transfer';
         if(label === 'SystemEmission') label = 'Block Reward';
-        html += '<div class="tx-history-item" onclick="location.href=\'/tx.html?tx='+tx.txHash+'\'">';
+        html += '<div class="tx-history-item" onclick="location.href=\'/tx.html?tx='+encodeURIComponent(tx.txHash)+apiQS()+'\'">';
         html += '<div class="tx-hist-icon '+iconCls+'">'+(isReceive?'↓':'↑')+'</div>';
         html += '<div class="tx-hist-info"><div class="tx-hist-label">'+escHtml(label)+'</div><div class="tx-hist-hash">'+tx.txHash+'</div></div>';
         html += '<div class="tx-hist-right"><div class="tx-hist-amount '+amtCls+'">'+amtPrefix+fmt(tx.amount)+' MSK</div><div class="tx-hist-time">'+fmtDate(tx.timestampMs)+'</div></div>';
@@ -389,7 +399,7 @@ function showAddr(addr){
     } else {
       html += '<table class="utxo-table"><thead><tr><th>TX Hash</th><th>Index</th><th>Block</th><th style="text-align:right">Amount</th></tr></thead><tbody>';
       utxos.forEach(function(u){
-        var txLink = '<a class="hash-link" href="/tx.html?tx='+u.txHash+'">'+(u.txHash||'').slice(0,10)+'…</a>';
+        var txLink = '<a class="hash-link" href="/tx.html?tx='+encodeURIComponent(u.txHash||'')+apiQS()+'">'+(u.txHash||'').slice(0,10)+'…</a>';
         html += '<tr><td>'+txLink+'</td><td class="mono">'+u.outputIndex+'</td><td>'+Number(u.createdAt||0).toLocaleString()+'</td><td class="amount">'+fmt(u.amount)+' MSK</td></tr>';
       });
       html += '</tbody></table>';
@@ -408,9 +418,9 @@ function doSearch(q){
   q = (q||'').trim();
   if(!q) return;
   if(q.startsWith('misaka1') || q.startsWith('misakatest1') || q.startsWith('msk1')){
-    location.href = '/tx.html?addr='+encodeURIComponent(q);
+    location.href = '/tx.html?addr='+encodeURIComponent(q)+apiQS();
   } else {
-    location.href = '/tx.html?tx='+encodeURIComponent(q);
+    location.href = '/tx.html?tx='+encodeURIComponent(q)+apiQS();
   }
 }
 
